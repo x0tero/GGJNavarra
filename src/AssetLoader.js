@@ -16,6 +16,12 @@ export default class AssetLoader {
         // 2. Load the back
         promises.push(this.loadImage('back', `./spanish_deck/back.png`));
 
+        // 2. Load Mascaras 1-4 (NEW)
+        for (let i = 1; i <= 4; i++) {
+            const name = `mascara_${i}`;
+            promises.push(this.loadImage(name, `./spanish_deck/${name}.png`));
+        }
+
         // Wait for all to finish
         await Promise.all(promises);
         return this.images;
@@ -25,14 +31,8 @@ export default class AssetLoader {
         return new Promise((resolve, reject) => {
             const img = new Image();
             img.src = src;
-            img.onload = () => {
-                this.images[key] = img;
-                resolve(img);
-            };
-            img.onerror = () => {
-                console.error(`Failed to load image: ${src}`);
-                reject();
-            };
+            img.onload = () => { this.images[key] = img; resolve(img); };
+            img.onerror = () => { console.error(`Error loading ${src}`); reject(); };
         });
     }
 }

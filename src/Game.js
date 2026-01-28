@@ -15,6 +15,9 @@ export default class Game {
         this.maskBoard = [];
         this.discardPile = []; 
 
+        this.animations = []; // Holds flying cards
+        this.isAnimating = false; // Block input while animating
+
         this.cardWidth = 80;
         this.cardHeight = 120;
         this.gap = 10;
@@ -22,6 +25,9 @@ export default class Game {
         const totalBoardWidth = (this.cols * this.cardWidth) + ((this.cols - 1) * this.gap);
         this.boardStartX = (canvas.width - totalBoardWidth) / 2;
         this.boardStartY = 50; 
+
+        this.deckX = 650;
+        this.deckY = 50;
 
         this.discardX = 50;
         this.discardY = 50;
@@ -38,6 +44,41 @@ export default class Game {
         this.nextLevelBtn = { x: 300, y: 350, width: 200, height: 60, text: "SIGUIENTE NIVEL", color: "#00C851", hoverColor: "#00e25b", isHovered: false };
         this.menuBtn = { x: 300, y: 430, width: 200, height: 60, text: "MENU PRINCIPAL", color: "#33b5e5", hoverColor: "#62c9e5", isHovered: false };
         this.drawActionBtn = { x: 650, y: 500, width: 100, height: 50, text: "ROBAR", color: "#ff8800", hoverColor: "#ffaa44", isHovered: false };
+    }
+
+    update() {
+        if (this.animations.length > 0) {
+            this.isAnimating = true;
+            
+            // Loop through backwards so we can remove items easily
+            for (let i = this.animations.length - 1; i >= 0; i--) {
+                const anim = this.animations[i];
+                anim.progress += anim.speed;
+
+                if (anim.progress >= 1) {
+                    // 1. Add card to logic hand
+                    this.playerHand.unshift(anim.cardId);
+                    
+                    // 2. Remove animation object
+                    this.animations.splice(i, 1);
+                    
+                    // 3. RUN THE CALLBACK (If it exists)
+                    if (anim.onComplete) {
+                        anim.onComplete(); 
+                    }
+                    
+                    // Only stop blocking input if ALL animations are done
+                    if (this.animations.length === 0) {
+                        this.isAnimating = false;
+                    }
+                } else {
+                    // Interpolate Position (Linear Interpolation - Lerp)
+                    // Current = Start + (End - Start) * Progress
+                    anim.currentX = anim.startX + (anim.targetX - anim.startX) * anim.progress;
+                    anim.currentY = anim.startY + (anim.targetY - anim.startY) * anim.progress;
+                }
+            }
+        }
     }
 
     render() {
@@ -130,6 +171,7 @@ export default class Game {
     }
 
     handleClick(mouseX, mouseY) {
+        if (this.isAnimating) return;
         if (this.gameState === 'MENU') {
             if (this.isInside(mouseX, mouseY, this.startBtn)) this.startGame();
             return;
@@ -181,10 +223,65 @@ export default class Game {
         }
     }
 
+    triggerFlyAnimation(cardId, startX, startY, onCompleteCallback) {
+        // Target: Leftmost part of hand (calculated based on CURRENT hand size)
+        // Note: Since we unshift, the visual target is roughly the start of the hand container
+        const handGap = 20; 
+        const futureHandSize = this.playerHand.length + 1;
+        const totalHandWidth = (futureHandSize * this.cardWidth) + ((futureHandSize - 1) * handGap);
+        const targetX = (this.canvas.width - totalHandWidth) / 2;
+        const targetY = this.playerHandY;
+
+        this.animations.push({
+            cardId: cardId,
+            startX: startX,
+            startY: startY,
+            currentX: startX,
+            currentY: startY,
+            targetX: targetX,
+            targetY: targetY,
+            progress: 0,
+            speed: 0.02, // Speed of flight
+            onComplete: onCompleteCallback // <--- Store the function to run later
+        });
+        
+        this.isAnimating = true;
+    }
+
+    drawCardWithAnimation(cardId) {
+        // 1. Calculate where the card SHOULD land.
+        // Since we are adding to the "Leftmost" (index 0), we assume it goes to the first slot.
+        // We need to calculate what the X position of index 0 will be.
+        
+        // We simulate what the hand width WILL be + 1 card
+        const handGap = 20; 
+        const futureHandSize = this.playerHand.length + 1;
+        const totalHandWidth = (futureHandSize * this.cardWidth) + ((futureHandSize - 1) * handGap);
+        const startX = (this.canvas.width - totalHandWidth) / 2;
+        
+        // The leftmost slot is just startX
+        const targetX = startX;
+        const targetY = this.playerHandY;
+
+        // 2. Create Animation Object
+        this.animations.push({
+            cardId: cardId,
+            startX: this.deckX,
+            startY: this.deckY,
+            currentX: this.deckX,
+            currentY: this.deckY,
+            targetX: targetX,
+            targetY: targetY,
+            progress: 0,
+            speed: 0.05 // 5% movement per frame (approx 1/3rd of a second)
+        });
+    }
+
     triggerDrawPenalty() {
+        if (this.isAnimating) return;
         const newCard = this.deck.draw();
         if (newCard) {
-            this.playerHand.push(newCard);
+            this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
         } else {
             return;
         }
@@ -206,21 +303,18 @@ export default class Game {
             const randomIndex = Math.floor(Math.random() * candidates.length);
             const target = candidates[randomIndex];
 
-            if (target.gameOver) {
-                this.gameState = 'GAME_OVER';
-            } else {
+            if (target.gameOver) this.gameState = 'GAME_OVER';
+            else {
                 const r = target.row;
                 const c = target.col;
                 const nextR = r + 1;
-
                 this.board[nextR][c] = this.board[r][c];
                 this.maskBoard[nextR][c] = this.maskBoard[r][c];
-
                 this.board[r][c] = null;
                 this.maskBoard[r][c] = null;
             }
         }
-        this.render();
+        //this.render();
     }
 
     getCardValue(id) { return (id - 1) % 10 + 1; }
@@ -265,18 +359,26 @@ export default class Game {
             this.maskBoard[row][col] = null;
             this.discardPile.push(playedCard);
             this.playerHand.splice(this.selectedCardIndex, 1);
-            this.playerHand.push(this.board[row][col]);
-            this.board[row][col] = null; 
 
-            const extraCard = this.deck.draw();
-            if (extraCard) this.playerHand.push(extraCard);
+            // A. Get coordinates of the board card (Starting Point)
+            const boardCardX = this.boardStartX + col * (this.cardWidth + this.gap);
+            const boardCardY = this.boardStartY + row * (this.cardHeight + this.gap);
+            const capturedCardId = this.board[row][col];
 
-            if (this.checkVictory()) {
-                this.gameState = 'VICTORY';
-                this.render();
-                return;
-            }
+            this.board[row][col] = null;
+            this.triggerFlyAnimation(capturedCardId, boardCardX, boardCardY, () => {
+                // Check for Victory
+                if (this.checkVictory()) {
+                    this.gameState = 'VICTORY';
+                    return;
+                }
 
+                // Trigger Animation 2: Deck -> Hand
+                const extraCard = this.deck.draw();
+                if (extraCard) {
+                    this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, null);
+                }
+            });
         } else {
             if (row === this.rows - 1) {
                 this.gameState = 'GAME_OVER';
@@ -295,7 +397,9 @@ export default class Game {
             this.playerHand.splice(this.selectedCardIndex, 1);
 
             const newCard = this.deck.draw();
-            if (newCard) this.playerHand.push(newCard);
+            if (newCard) {
+                this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
+            }
         }
 
         this.selectedCardIndex = -1;
@@ -346,6 +450,11 @@ export default class Game {
 
         this.drawButton(this.drawActionBtn);
 
+        const backImg = this.assets['back'];
+        if (backImg) {
+            this.ctx.drawImage(backImg, this.deckX, this.deckY, this.cardWidth, this.cardHeight);
+        }
+
         if (this.discardPile.length > 0) {
             const topCard = this.discardPile[this.discardPile.length - 1];
             const img = this.assets[topCard.toString()];
@@ -378,6 +487,7 @@ export default class Game {
             }
         }
 
+        // --- UPDATED: Draw Hand ---
         if (this.playerHand.length > 0) {
             this.ctx.fillStyle = "white";
             this.ctx.font = "bold 16px Arial";
@@ -390,6 +500,8 @@ export default class Game {
 
             this.playerHand.forEach((cardId, index) => {
                 const img = this.assets[cardId.toString()];
+                // Note: If we just finished an animation (unshift), the other cards might jump instantly to the right.
+                // This is normal for simple games.
                 const x = startX + index * (this.cardWidth + handGap);
                 
                 if (index === this.selectedCardIndex) {
@@ -403,6 +515,18 @@ export default class Game {
             });
             this.ctx.shadowBlur = 0;
         }
+
+        // --- NEW: DRAW ACTIVE ANIMATIONS (Flying Cards) ---
+        // These are drawn ON TOP of everything else
+        this.animations.forEach(anim => {
+            const img = this.assets[anim.cardId.toString()];
+            this.ctx.shadowBlur = 20;
+            this.ctx.shadowColor = "rgba(0,0,0,0.5)";
+            // Draw at the interpolated currentX/currentY
+            this.ctx.drawImage(img, anim.currentX, anim.currentY, this.cardWidth, this.cardHeight);
+            this.ctx.shadowBlur = 0;
+        });
+
     }
 
     drawMenuScene() {

@@ -8,8 +8,15 @@ const loader = new AssetLoader();
 loader.loadAll().then((loadedAssets) => {
     const game = new Game(canvas, ctx, loadedAssets);
     
-    // Initial Render (Shows the Menu)
-    game.render();
+    // Initial Render
+    game.startGame();
+
+    function loop() {
+        game.update(); // Calculate movements
+        game.render(); // Draw everything
+        requestAnimationFrame(loop); // Repeat 60 times/sec
+    }
+    loop(); // Start the loop
 
     // Event Listeners
     canvas.addEventListener('mousedown', (e) => {

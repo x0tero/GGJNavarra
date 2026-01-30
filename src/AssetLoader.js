@@ -1,28 +1,31 @@
 export default class AssetLoader {
     constructor() {
-        this.images = {}; // Will hold { "1": Image, "2": Image ... "back": Image }
-        this.totalImages = 41; // 40 cards + 1 back
-        this.loadedCount = 0;
+        this.images = {}; 
     }
 
     async loadAll() {
         const promises = [];
 
-        // 1. Load cards 1-40
-        for (let i = 1; i <= 40; i++) {
-            promises.push(this.loadImage(i.toString(), `./spanish_deck/${i}.png`));
-        }
+        // 1. Load the Big Sprite Sheets
+        // We assume the file is named 'mascaras.png'
+        await this.loadSpriteSheet('./spanish_deck/barallamini.png', 'cards');
+        await this.loadSpriteSheet('./spanish_deck/mascaras.png', 'masks');
 
-        // 2. Load the back
-        promises.push(this.loadImage('back', `./spanish_deck/back.png`));
+        // 2. Load the single Back image
+        promises.push(this.loadImage('back', `./spanish_deck/baralladorso.png`));
+        promises.push(this.loadImage('board', `./spanish_deck/taboleiro.png`));
+        const fontLoad = new FontFace('Minipixel', 'url(./spanish_deck/Minipixel.ttf');
+        
+        // Add the font promise to our waiting list
+        promises.push(
+            fontLoad.load().then((loadedFont) => {
+                document.fonts.add(loadedFont);
+                console.log("Font loaded!");
+            }).catch((err) => {
+                console.error("Failed to load font:", err);
+            })
+        );
 
-        // 2. Load Mascaras 1-4 (NEW)
-        for (let i = 1; i <= 4; i++) {
-            const name = `mascara_${i}`;
-            promises.push(this.loadImage(name, `./spanish_deck/${name}.png`));
-        }
-
-        // Wait for all to finish
         await Promise.all(promises);
         return this.images;
     }
@@ -34,5 +37,110 @@ export default class AssetLoader {
             img.onload = () => { this.images[key] = img; resolve(img); };
             img.onerror = () => { console.error(`Error loading ${src}`); reject(); };
         });
+    }
+
+    // Generalized Sprite Sheet Loader
+    loadSpriteSheet(src, type) {
+        return new Promise((resolve, reject) => {
+            const spriteSheet = new Image();
+            spriteSheet.src = src;
+            
+            spriteSheet.onload = () => {
+                if (type === 'cards') {
+                    this.sliceCards(spriteSheet);
+                } else if (type === 'masks') {
+                    this.sliceMasks(spriteSheet);
+                }
+                resolve();
+            };
+            spriteSheet.onerror = () => {
+                console.error(`Failed to load sprite sheet: ${src}`);
+                reject(); // Don't crash, just log error
+            };
+        });
+    }
+
+    // --- SLICE LOGIC FOR CARDS (1-40) ---
+    sliceCards(sheet) {
+        const cardWidth = 48;
+        const cardHeight = 76;
+        const rowStartIds = [11, 21, 1, 31]; // Copas, Espadas, Oros, Bastos
+
+        for (let row = 0; row < 4; row++) {
+            for (let col = 0; col < 10; col++) {
+                const canvas = document.createElement('canvas');
+                canvas.width = cardWidth;
+                canvas.height = cardHeight;
+                const ctx = canvas.getContext('2d');
+                
+                // Disable smoothing for pixel art crispness
+                ctx.imageSmoothingEnabled = false;
+
+                ctx.drawImage(sheet, 
+                    col * cardWidth, row * cardHeight, 
+                    cardWidth, cardHeight, 
+                    0, 0, cardWidth, cardHeight
+                );
+
+                const newImg = new Image();
+                newImg.src = canvas.toDataURL();
+                
+                const finalId = rowStartIds[row] + col;
+                this.images[finalId.toString()] = newImg;
+            }
+        }
+        console.log("Cards loaded!");
+    }
+
+    // --- SLICE LOGIC FOR MASKS (Named List) ---
+    sliceMasks(sheet) {
+        const cardWidth = 48;
+        const cardHeight = 76;
+
+        // The list of names provided, in order (Left->Right, Top->Bottom)
+        const maskNames = [
+            // Row 1
+            "Felicidad", "Tristeza", "Cinismo", "Ira", "Conspirador", "Soldado",
+            // Row 2
+            "Desliz", "Preocupacion", "Sorpresa", "Trauma", "Afouteza", "Bruto",
+            // Row 3
+            "Decepcion", "Enfado", "Presumido", "Dereita", "Esquerda", "Borracho",
+            // Row 4
+            "Alteza", "Cabalo", "Carlista", "Artista", "Pirata", "Codicia"
+        ];
+
+        let nameIndex = 0;
+
+        // 4 Rows
+        for (let row = 0; row < 4; row++) {
+            // 6 Columns
+            for (let col = 0; col < 6; col++) {
+                
+                // Safety check: Don't crash if image is bigger than name list
+                if (nameIndex >= maskNames.length) break;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = cardWidth;
+                canvas.height = cardHeight;
+                const ctx = canvas.getContext('2d');
+                
+                ctx.imageSmoothingEnabled = false;
+
+                ctx.drawImage(sheet, 
+                    col * cardWidth, row * cardHeight, 
+                    cardWidth, cardHeight, 
+                    0, 0, cardWidth, cardHeight
+                );
+
+                const newImg = new Image();
+                newImg.src = canvas.toDataURL();
+                
+                const maskName = maskNames[nameIndex];
+                this.images[maskName] = newImg;
+
+                nameIndex++;
+            }
+        }
+        console.log("Masks loaded!");
     }
 }

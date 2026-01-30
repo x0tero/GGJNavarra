@@ -18,35 +18,41 @@ export default class Game {
         this.animations = []; // Holds flying cards
         this.isAnimating = false; // Block input while animating
 
-        this.cardWidth = 80;
-        this.cardHeight = 120;
-        this.gap = 10;
+        this.cardWidth = 48;
+        this.cardHeight = 76;
+        this.gap = 22;
         
         const totalBoardWidth = (this.cols * this.cardWidth) + ((this.cols - 1) * this.gap);
-        this.boardStartX = (canvas.width - totalBoardWidth) / 2;
-        this.boardStartY = 50; 
+        this.boardStartX = 103;//(canvas.width - totalBoardWidth) / 2;
+        this.boardStartY = 75; 
 
-        this.deckX = 650;
-        this.deckY = 50;
+        this.deckX = 21;
+        this.deckY = 368;
+        this.deckHovered = false;
 
-        this.discardX = 50;
-        this.discardY = 50;
+        this.discardX = 21;
+        this.discardY = 172;
 
         this.playerHand = []; 
         this.selectedCardIndex = -1; 
-        this.playerHandY = 600; 
+        this.playerHandY = 500; 
 
         this.level = 1;
 
+        this.activeTooltip = null; // Will store { x, y, title, text }
+
         // Buttons
-        this.startBtn = { x: 300, y: 350, width: 200, height: 60, text: "JUGAR", color: "#ffd700", hoverColor: "#fff", isHovered: false };
-        this.restartBtn = { x: 300, y: 400, width: 200, height: 60, text: "REINTENTAR", color: "#d32f2f", hoverColor: "#ff6659", isHovered: false };
-        this.nextLevelBtn = { x: 300, y: 350, width: 200, height: 60, text: "SIGUIENTE NIVEL", color: "#00C851", hoverColor: "#00e25b", isHovered: false };
-        this.menuBtn = { x: 300, y: 430, width: 200, height: 60, text: "MENU PRINCIPAL", color: "#33b5e5", hoverColor: "#62c9e5", isHovered: false };
-        this.drawActionBtn = { x: 650, y: 500, width: 100, height: 50, text: "ROBAR", color: "#ff8800", hoverColor: "#ffaa44", isHovered: false };
+        this.startBtn = { x: 120, y: 350, width: 200, height: 60, text: "XOGAR", color: "#ffd700", hoverColor: "#fff", isHovered: false };
+        this.restartBtn = { x: 120, y: 400, width: 200, height: 60, text: "REINTENTAR", color: "#d32f2f", hoverColor: "#ff6659", isHovered: false };
+        this.nextLevelBtn = { x: 120, y: 350, width: 200, height: 60, text: "SEGUINTE NIVEL", color: "#00C851", hoverColor: "#00e25b", isHovered: false };
+        this.menuBtn = { x: 120, y: 430, width: 200, height: 60, text: "MENU PRINCIPAL", color: "#33b5e5", hoverColor: "#62c9e5", isHovered: false };    
     }
 
     update() {
+        if (this.animations.length === 0) {
+            this.isAnimating = false;
+            return;
+        }
         if (this.animations.length > 0) {
             this.isAnimating = true;
             
@@ -55,27 +61,62 @@ export default class Game {
                 const anim = this.animations[i];
                 anim.progress += anim.speed;
 
-                if (anim.progress >= 1) {
-                    // 1. Add card to logic hand
-                    this.playerHand.unshift(anim.cardId);
-                    
-                    // 2. Remove animation object
-                    this.animations.splice(i, 1);
-                    
-                    // 3. RUN THE CALLBACK (If it exists)
-                    if (anim.onComplete) {
-                        anim.onComplete(); 
+                // --- TYPE 1: FLYING CARD (Movement) ---
+                if (anim.type === 'fly') {
+                    if (anim.progress >= 1) {
+                        if (anim.targetType === 'hand') {
+                            this.playerHand.unshift(anim.cardId);
+                        } else if (anim.targetType === 'discard') {
+                            this.discardPile.push(anim.cardId);
+                        }
+                        this.animations.splice(i, 1);
+                        if (anim.onComplete) anim.onComplete();
+                    } else {
+                        // Linear Interpolation for position
+                        anim.currentX = anim.startX + (anim.targetX - anim.startX) * anim.progress;
+                        anim.currentY = anim.startY + (anim.targetY - anim.startY) * anim.progress;
                     }
-                    
-                    // Only stop blocking input if ALL animations are done
-                    if (this.animations.length === 0) {
-                        this.isAnimating = false;
+                }
+                
+                // --- TYPE 2: EFFECT (Mask Wipe - Fade & Scale) ---
+                else if (anim.type === 'effect') {
+                    if (anim.progress >= 1) {
+                        this.animations.splice(i, 1);
+                        if (anim.onComplete) anim.onComplete();
+                    } else {
+                        // Fade Out: Alpha goes from 1.0 to 0.0
+                        anim.alpha = 1 - anim.progress; 
+                        // Scale Up: Grows from 1.0 to 1.5 (Ghost effect)
+                        anim.scale = 1 + (anim.progress * 0.5); 
                     }
-                } else {
-                    // Interpolate Position (Linear Interpolation - Lerp)
-                    // Current = Start + (End - Start) * Progress
-                    anim.currentX = anim.startX + (anim.targetX - anim.startX) * anim.progress;
-                    anim.currentY = anim.startY + (anim.targetY - anim.startY) * anim.progress;
+                }
+
+                // --- TYPE 3: SHAKE (Wobble) ---
+                else if (anim.type === 'shake') {
+                    if (anim.progress >= 1) {
+                        this.animations.splice(i, 1);
+                        if (anim.onComplete) anim.onComplete();
+                    } else {
+                        // Math.sin(progress * Pi * Frequency) * Magnitude
+                        // 4 * PI means 2 full shakes back and forth
+                        anim.offsetX = Math.sin(anim.progress * Math.PI * 4) * 4; 
+                    }
+                }
+
+                // --- NEW: SLIDE STACK (Card + Mask) ---
+                else if (anim.type === 'slideStack') {
+                    if (anim.progress >= 1) {
+                        // Animation Done: Write data to the NEW slot
+                        this.board[anim.destRow][anim.destCol] = anim.cardId;
+                        this.maskBoard[anim.destRow][anim.destCol] = anim.maskName;
+                        
+                        this.animations.splice(i, 1);
+                        if (anim.onComplete) anim.onComplete();
+                    } else {
+                        // Move
+                        anim.currentX = anim.startX + (anim.targetX - anim.startX) * anim.progress;
+                        anim.currentY = anim.startY + (anim.targetY - anim.startY) * anim.progress;
+                    }
                 }
             }
         }
@@ -113,7 +154,8 @@ export default class Game {
         this.playerHand = [];
 
         // 1. Define the Masks for the first row
-        const masks = ['mascara_1', 'mascara_2', 'mascara_3', 'mascara_4'];
+        const masks = ['Felicidad', 'Tristeza', 'Ira', 'Conspirador'];
+        //const masks = ['mascara_1', 'mascara_2', 'mascara_3', 'mascara_4'];
 
         let validSetFound = false;
         let sortedCards = [];
@@ -187,10 +229,23 @@ export default class Game {
         }
 
         if (this.gameState === 'PLAYING') {
-            if (this.isInside(mouseX, mouseY, this.drawActionBtn)) {
+            const wasTooltipOpen = this.activeTooltip !== null;
+            this.activeTooltip = null;
+
+            if (mouseX > this.deckX && mouseX < this.deckX + this.cardWidth &&
+                mouseY > this.deckY && mouseY < this.deckY + this.cardHeight) {
+                
+                // Call the existing logic
                 this.triggerDrawPenalty();
                 return;
             }
+
+            // Boton de roubo 
+            /*
+            if (this.isInside(mouseX, mouseY, this.drawActionBtn)) {
+                this.triggerDrawPenalty();
+                return;
+            }*/
 
             // Check Hand
             const handGap = 20; 
@@ -220,8 +275,100 @@ export default class Game {
             if (validCol && validRow) {
                 this.handleGridInteraction(row, col);
             }
+            this.render();
         }
     }
+
+
+    triggerMaskWipe(maskName, x, y, onCompleteCallback) {
+        this.animations.push({
+            type: 'effect',       // It's an effect, not a card movement
+            assetKey: maskName,   // The image to draw (e.g., 'happy mask')
+            currentX: x,
+            currentY: y,          // Note: Effects stay in place (mostly)
+            alpha: 1,             // Start fully visible
+            scale: 1,             // Start normal size
+            progress: 0,
+            speed: 0.05,          // Speed of fade
+            onComplete: onCompleteCallback
+        });
+        this.isAnimating = true;
+    }
+
+
+
+    triggerShakeAnimation(row, col, onCompleteCallback) {
+        this.animations.push({
+            type: 'shake',
+            row: row,    // We need to know WHICH cell to shake
+            col: col,
+            offsetX: 0,  // Starts at 0
+            progress: 0,
+            speed: 0.02, // Fast shake
+            onComplete: onCompleteCallback
+        });
+        this.isAnimating = true;
+    }
+
+
+    triggerSlideAnimation(row, col, nextRow, onCompleteCallback) {
+        // 1. Capture Data
+        const cardId = this.board[row][col];
+        const maskName = this.maskBoard[row][col];
+        
+        // 2. Calculate Coordinates
+        const startX = this.boardStartX + col * (this.cardWidth + this.gap);
+        const startY = this.boardStartY + row * (this.cardHeight + this.gap);
+        
+        const targetX = startX; // Same column
+        const targetY = this.boardStartY + nextRow * (this.cardHeight + this.gap);
+
+        // 3. Clear the Old Spot Immediately (so it doesn't draw twice)
+        this.board[row][col] = null;
+        this.maskBoard[row][col] = null;
+
+        // 4. Create Animation Object
+        this.animations.push({
+            type: 'slideStack', // New Type
+            cardId: cardId,
+            maskName: maskName,
+            
+            startX: startX,
+            startY: startY,
+            currentX: startX,
+            currentY: startY,
+            targetX: targetX,
+            targetY: targetY,
+            
+            // Store destination index to write data later
+            destRow: nextRow,
+            destCol: col,
+            
+            progress: 0,
+            speed: 0.02,
+            onComplete: onCompleteCallback
+        });
+        this.isAnimating = true;
+    }
+
+    triggerDiscardAnimation(cardId, startX, startY, onCompleteCallback) {
+        this.animations.push({
+            type: 'fly',
+            targetType: 'discard',
+            cardId: cardId,
+            startX: startX,
+            startY: startY,
+            currentX: startX,
+            currentY: startY,
+            targetX: this.discardX,
+            targetY: this.discardY,
+            progress: 0,
+            speed: 0.02,
+            onComplete: onCompleteCallback
+        });
+        this.isAnimating = true;
+    }
+
 
     triggerFlyAnimation(cardId, startX, startY, onCompleteCallback) {
         // Target: Leftmost part of hand (calculated based on CURRENT hand size)
@@ -233,6 +380,8 @@ export default class Game {
         const targetY = this.playerHandY;
 
         this.animations.push({
+            type: 'fly',         // <--- IMPORTANT: Mark as 'fly'
+            targetType: 'hand',
             cardId: cardId,
             startX: startX,
             startY: startY,
@@ -278,7 +427,12 @@ export default class Game {
     }
 
     triggerDrawPenalty() {
-        if (this.isAnimating) return;
+        // 1. Guard Clauses: Don't run if animating OR if hand is full
+        if (this.isAnimating) return; 
+        if (this.isAnimating) return; 
+        if (this.playerHand.length >= 5) return;
+
+        // 1. Give Player a Card (Reward)
         const newCard = this.deck.draw();
         if (newCard) {
             this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
@@ -286,13 +440,19 @@ export default class Game {
             return;
         }
 
+        // 2. Identify all movable masks
         let candidates = [];
+
         for(let r = 0; r < this.rows; r++) {
             for(let c = 0; c < this.cols; c++) {
                 if (this.maskBoard[r][c] !== null) {
+                    
+                    // Condition A: It's at the bottom edge (Game Over move)
                     if (r === this.rows - 1) {
                         candidates.push({row: r, col: c, gameOver: true});
-                    } else if (this.board[r+1][c] === null) {
+                    } 
+                    // Condition B: The spot below is empty (Standard move)
+                    else if (this.board[r+1][c] === null) {
                         candidates.push({row: r, col: c, gameOver: false});
                     }
                 }
@@ -300,21 +460,45 @@ export default class Game {
         }
 
         if (candidates.length > 0) {
-            const randomIndex = Math.floor(Math.random() * candidates.length);
-            const target = candidates[randomIndex];
+            // 3. Find "Most Behind" (The Smallest Row Index)
+            // We want to move the ones furthest from the finish line first.
+            let minRow = this.rows; // Start higher than possible (4)
+            
+            candidates.forEach(c => {
+                if (c.row < minRow) minRow = c.row;
+            });
 
-            if (target.gameOver) this.gameState = 'GAME_OVER';
-            else {
+            // 4. Filter list to only include masks in that row
+            const priorityCandidates = candidates.filter(c => c.row === minRow);
+
+            // 5. Pick Randomly among the tied masks
+            const randomIndex = Math.floor(Math.random() * priorityCandidates.length);
+            const target = priorityCandidates[randomIndex];
+
+            if (target.gameOver) {
+                console.log("Game Over: Mask reached the end.");
+                this.gameState = 'GAME_OVER';
+            } else {
+                // Move Logic
                 const r = target.row;
                 const c = target.col;
                 const nextR = r + 1;
+
+                // Move Card & Mask Data
                 this.board[nextR][c] = this.board[r][c];
                 this.maskBoard[nextR][c] = this.maskBoard[r][c];
+
+                // Clear old spot
                 this.board[r][c] = null;
                 this.maskBoard[r][c] = null;
+                
+                console.log(`Penalty: Mask at [${r},${c}] moved to [${nextR},${c}]`);
             }
+        } else {
+            console.log("Lucky! No masks could move.");
         }
-        //this.render();
+
+        this.render();
     }
 
     getCardValue(id) { return (id - 1) % 10 + 1; }
@@ -327,10 +511,19 @@ export default class Game {
         const bSuit = this.getCardSuit(boardCardId);
 
         switch (maskName) {
-            case "mascara_1": return pVal > bVal;
-            case "mascara_2": return pVal < bVal;
-            case "mascara_3": return pVal === bVal;
-            case "mascara_4": return pSuit === bSuit;
+            case "Felicidad":
+                return pVal > bVal;
+            
+            case "Tristeza": 
+                return pVal < bVal;
+            
+            case "Conspirador":
+                return pSuit === bSuit;
+            
+            case "Ira": 
+                return pVal === bVal;
+                
+
             default: return false;
         }
     }
@@ -345,65 +538,122 @@ export default class Game {
     }
 
     handleGridInteraction(row, col) {
-        if (this.selectedCardIndex === -1) return;
-        
         const targetMask = this.maskBoard[row][col];
         if (!targetMask) return; 
+        
+        // 1. INFO MODE: No card selected + Clicked on a Mask
+        if (this.selectedCardIndex === -1) {
+            if (targetMask) {
+                // Calculate position above the card
+                const cellX = this.boardStartX + col * (this.cardWidth + this.gap);
+                const cellY = this.boardStartY + row * (this.cardHeight + this.gap);
+                
+                this.activeTooltip = {
+                    x: cellX + this.cardWidth / 2, // Center X
+                    y: cellY - 15,                 // Slightly above the card
+                    title: targetMask.toUpperCase(),
+                    text: this.getMaskDescription(targetMask)
+                };
+            }
+            this.render();
+            return; // Stop here, don't try to battle
+        }
 
         const targetCardValue = this.board[row][col];
         const playedCard = this.playerHand[this.selectedCardIndex]; 
         
+        // Calculate Win/Loss
         const playerWins = this.checkBattleWin(targetMask, playedCard, targetCardValue);
 
+        // --- PREPARE FOR ANIMATION ---
+        
+        // 1. Calculate Hand Coordinates (Where the card starts flying from)
+        const handGap = 20; 
+        const totalHandWidth = (this.playerHand.length * this.cardWidth) + ((this.playerHand.length - 1) * handGap);
+        const handStartX = (this.canvas.width - totalHandWidth) / 2;
+        const cardHandX = handStartX + this.selectedCardIndex * (this.cardWidth + handGap);
+        const cardHandY = this.playerHandY;
+
+
         if (playerWins) {
-            this.maskBoard[row][col] = null;
-            this.discardPile.push(playedCard);
+            console.log("WIN!");
+            // (Your existing Win Sequence with Ghost Wipe)
+            //this.maskBoard[row][col] = null;
             this.playerHand.splice(this.selectedCardIndex, 1);
+            this.selectedCardIndex = -1; // Reset selection
+            // ANIMATION: Hand -> Discard
+            this.triggerDiscardAnimation(playedCard, cardHandX, cardHandY, () => {
+                // After discard lands, do the capture logic
+                const cellX = this.boardStartX + col * (this.cardWidth + this.gap);
+                const cellY = this.boardStartY + row * (this.cardHeight + this.gap);
+                const capturedCardId = this.board[row][col];
 
-            // A. Get coordinates of the board card (Starting Point)
-            const boardCardX = this.boardStartX + col * (this.cardWidth + this.gap);
-            const boardCardY = this.boardStartY + row * (this.cardHeight + this.gap);
-            const capturedCardId = this.board[row][col];
-
-            this.board[row][col] = null;
-            this.triggerFlyAnimation(capturedCardId, boardCardX, boardCardY, () => {
-                // Check for Victory
-                if (this.checkVictory()) {
-                    this.gameState = 'VICTORY';
-                    return;
-                }
-
-                // Trigger Animation 2: Deck -> Hand
-                const extraCard = this.deck.draw();
-                if (extraCard) {
-                    this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, null);
-                }
+                this.triggerMaskWipe(targetMask, cellX, cellY, () => {
+                    this.maskBoard[row][col] = null;
+                    setTimeout(() => {
+                        this.board[row][col] = null;
+                        this.triggerFlyAnimation(capturedCardId, cellX, cellY, () => {
+                            if (this.checkVictory()) {
+                                this.gameState = 'VICTORY';
+                                return;
+                            }
+                            const extraCard = this.deck.draw();
+                            if (extraCard) this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, null);
+                        });
+                    }, 1000);
+                });
             });
+
         } else {
-            if (row === this.rows - 1) {
-                this.gameState = 'GAME_OVER';
-                this.render();
-                return; 
-            }
-            const nextRow = row + 1;
-            if (nextRow < this.rows && this.board[nextRow][col] === null) {
-                this.board[nextRow][col] = this.board[row][col];
-                this.board[row][col] = null;
-                this.maskBoard[nextRow][col] = this.maskBoard[row][col];
-                this.maskBoard[row][col] = null;
-            }
+            console.log("LOSE!");
+            
+            // --- SEQUENCE: SHAKE -> DISCARD -> PENALTY ---
 
-            this.discardPile.push(playedCard);
-            this.playerHand.splice(this.selectedCardIndex, 1);
+            // 1. Trigger Shake
+            this.triggerShakeAnimation(row, col, () => {
 
-            const newCard = this.deck.draw();
-            if (newCard) {
-                this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
-            }
+                this.playerHand.splice(this.selectedCardIndex, 1);
+                this.selectedCardIndex = -1; // Reset selection
+
+                // 2. Shake Done: Fly Card to Discard
+                this.triggerDiscardAnimation(playedCard, cardHandX, cardHandY, () => {
+                    
+                    // 3. Flight Done: Apply Penalty Logic
+                    if (row === this.rows - 1) {
+                        this.gameState = 'GAME_OVER';
+                        this.render();
+                        return; 
+                    }
+
+                    const nextRow = row + 1;
+                    if (nextRow < this.rows && this.board[nextRow][col] === null) {
+                        // 3. NEW: Slide Animation
+                        this.triggerSlideAnimation(row, col, nextRow, () => {
+                            // Roba carta ao rematar o movemento
+                            const newCard = this.deck.draw();
+                            if (newCard) {
+                                this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
+                            }
+                        });
+                        /*
+                        this.board[nextRow][col] = this.board[row][col];
+                        this.board[row][col] = null;
+                        this.maskBoard[nextRow][col] = this.maskBoard[row][col];
+                        this.maskBoard[row][col] = null;
+                        */
+                    }
+
+                    
+
+                    // 4. Draw Replacement Card
+                    //const newCard = this.deck.draw();
+                    //if (newCard) {
+                    //    this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
+                    //}
+                });
+            });
         }
-
-        this.selectedCardIndex = -1;
-        this.render();
+    
     }
 
     drawVictoryScene() {
@@ -411,12 +661,12 @@ export default class Game {
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
         this.ctx.fillStyle = "#ffd700"; 
-        this.ctx.font = "bold 60px Arial";
+        this.ctx.font = "20px Minipixel";//"bold 60px Arial";
         this.ctx.textAlign = "center";
         this.ctx.fillText("¡VICTORIA!", this.canvas.width / 2, 200);
 
         this.ctx.fillStyle = "white";
-        this.ctx.font = "30px Arial";
+        this.ctx.font = "10px Minipixel"//"30px Arial";
         this.ctx.fillText(`Nivel ${this.level} Completado`, this.canvas.width / 2, 260);
 
         this.drawButton(this.nextLevelBtn);
@@ -428,73 +678,121 @@ export default class Game {
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
         this.ctx.fillStyle = "#ff4444"; 
-        this.ctx.font = "bold 80px Arial";
+        this.ctx.font = "20px Minipixel"//"bold 80px Arial";
         this.ctx.textAlign = "center";
-        this.ctx.fillText("FIN DE JUEGO", this.canvas.width / 2, 250);
+        this.ctx.fillText("FIN DO XOGO", this.canvas.width / 2, 250);
 
         this.ctx.fillStyle = "white";
-        this.ctx.font = "24px Arial";
-        this.ctx.fillText("La máscara ha llegado al final.", this.canvas.width / 2, 300);
+        this.ctx.font = "10px Minipixel"//"24px Arial";
+        this.ctx.fillText("A máscara chegou ao final.", this.canvas.width / 2, 300);
 
         this.drawButton(this.restartBtn);
     }
 
     drawGameScene() {
-        this.ctx.fillStyle = '#0a6c0a'; 
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        const boardImg = this.assets['board'];
+        if (boardImg) {
+            // Option A: Stretch to fit the canvas
+            this.ctx.drawImage(boardImg, 0, 0, this.canvas.width, this.canvas.height);
+            
+            // Option B: If the board is a specific size (e.g. 800x600) and you want to center it:
+            // const x = (this.canvas.width - boardImg.width) / 2;
+            // const y = (this.canvas.height - boardImg.height) / 2;
+            // this.ctx.drawImage(boardImg, x, y);
+        } else {
+            // Fallback color if image fails to load
+            this.ctx.fillStyle = '#0a6c0a'; 
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        }
 
         this.ctx.fillStyle = "rgba(0,0,0,0.3)";
-        this.ctx.font = "bold 20px Arial";
+        this.ctx.font = "15px minipixel";//"bold 20px Arial";
         this.ctx.textAlign = "left";
         this.ctx.fillText(`NIVEL: ${this.level}`, 20, 30);
 
-        this.drawButton(this.drawActionBtn);
+
+        // DRAW BUTTON STATE LOGIC
+        /*
+        if (this.playerHand.length >= 5) {
+            // Disabled State (Grey)
+            this.drawActionBtn.color = "#555555"; 
+            this.drawActionBtn.hoverColor = "#555555"; 
+            this.drawActionBtn.text = "MAX (5)"; // Optional: Change text to explain why
+        } else {
+            // Active State (Orange)
+            this.drawActionBtn.color = "#ff8800"; 
+            this.drawActionBtn.hoverColor = "#ffaa44"; 
+            this.drawActionBtn.text = "ROBAR";
+        }
+        */
+        //this.drawButton(this.drawActionBtn);
 
         const backImg = this.assets['back'];
         if (backImg) {
             this.ctx.drawImage(backImg, this.deckX, this.deckY, this.cardWidth, this.cardHeight);
+            this.ctx.drawImage(backImg, this.deckX, this.deckY, this.cardWidth, this.cardHeight-3);
+            this.ctx.drawImage(backImg, this.deckX, this.deckY, this.cardWidth, this.cardHeight-6);
+            this.ctx.drawImage(backImg, this.deckX, this.deckY, this.cardWidth, this.cardHeight-9);
         }
+        // Indicador de cartas restantes
+        const cardsLeft = this.deck.cards.length;
+        
+        //this.ctx.fillStyle = "black";
+        this.ctx.fillStyle = "rgba(0,0,0,0.3)";
+        this.ctx.font = "12px Minipixel";
+        this.ctx.textAlign = "center";
+        
+        // Position: Centered horizontally on the deck, and slightly below it
+        const textX = this.deckX + (this.cardWidth / 2);
+        const textY = this.deckY + this.cardHeight + 30; 
 
+        this.ctx.fillText(`${cardsLeft}/40`, textX, textY);
+        
         if (this.discardPile.length > 0) {
             const topCard = this.discardPile[this.discardPile.length - 1];
             const img = this.assets[topCard.toString()];
             this.ctx.drawImage(img, this.discardX, this.discardY, this.cardWidth, this.cardHeight);
-        } else {
+        } 
+        /*else {
             this.ctx.strokeStyle = "rgba(0,0,0,0.3)";
             this.ctx.strokeRect(this.discardX, this.discardY, this.cardWidth, this.cardHeight);
-        }
+        }*/
+        
 
         for (let row = 0; row < this.rows; row++) {
             for (let col = 0; col < this.cols; col++) {
-                const x = this.boardStartX + col * (this.cardWidth + this.gap);
-                const y = this.boardStartY + row * (this.cardHeight + this.gap);
+                let x = this.boardStartX + col * (this.cardWidth + this.gap);
+                let y = this.boardStartY + row * (this.cardHeight + this.gap);
 
-                this.ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-                this.ctx.lineWidth = 2;
-                this.ctx.strokeRect(x, y, this.cardWidth, this.cardHeight);
-
+                
                 const cardValue = this.board[row][col];
                 if (cardValue !== null) {
                     const img = this.assets[cardValue.toString()];
                     this.ctx.drawImage(img, x, y, this.cardWidth, this.cardHeight);
                 }
+                // 2. CHECK FOR SHAKE anim
+                const activeShake = this.animations.find(a => a.type === 'shake' && a.row === row && a.col === col);
+                if (activeShake) {
+                    x += activeShake.offsetX; // Apply the wobble to X
+                }
+                    
 
                 const maskValue = this.maskBoard[row][col];
                 if (maskValue !== null) {
                     const maskImg = this.assets[maskValue];
-                    if (maskImg) this.ctx.drawImage(maskImg, x, y - 5, this.cardWidth, this.cardHeight);
+                    if (maskImg) this.ctx.drawImage(maskImg, x, y - 3, this.cardWidth, this.cardHeight);
                 }
             }
         }
 
         // --- UPDATED: Draw Hand ---
         if (this.playerHand.length > 0) {
-            this.ctx.fillStyle = "white";
-            this.ctx.font = "bold 16px Arial";
-            this.ctx.textAlign = "center";
-            this.ctx.fillText("TU MANO", this.canvas.width / 2, this.playerHandY - 10);
+            //this.ctx.fillStyle = "white";
+            //this.ctx.font = "bold 16px Arial";
+            //this.ctx.textAlign = "center";
+            //this.ctx.fillText("TU MANO", this.canvas.width / 2, this.playerHandY - 10);
 
-            const handGap = 20; 
+            const handGap = 10; 
             const totalHandWidth = (this.playerHand.length * this.cardWidth) + ((this.playerHand.length - 1) * handGap);
             const startX = (this.canvas.width - totalHandWidth) / 2;
 
@@ -515,18 +813,186 @@ export default class Game {
             });
             this.ctx.shadowBlur = 0;
         }
+        
 
-        // --- NEW: DRAW ACTIVE ANIMATIONS (Flying Cards) ---
-        // These are drawn ON TOP of everything else
+        // --- DRAW ACTIVE ANIMATIONS ---
         this.animations.forEach(anim => {
-            const img = this.assets[anim.cardId.toString()];
-            this.ctx.shadowBlur = 20;
-            this.ctx.shadowColor = "rgba(0,0,0,0.5)";
-            // Draw at the interpolated currentX/currentY
-            this.ctx.drawImage(img, anim.currentX, anim.currentY, this.cardWidth, this.cardHeight);
-            this.ctx.shadowBlur = 0;
+            
+            // 1. Draw Flying Cards
+            if (anim.type === 'fly') {
+                const img = this.assets[anim.cardId.toString()];
+                this.ctx.shadowBlur = 20;
+                this.ctx.shadowColor = "rgba(0,0,0,0.5)";
+                this.ctx.drawImage(img, anim.currentX, anim.currentY, this.cardWidth, this.cardHeight);
+                this.ctx.shadowBlur = 0;
+            } 
+            
+            // 2. Draw Effects (Fading Masks)
+            else if (anim.type === 'effect') {
+                const img = this.assets[anim.assetKey];
+                
+                this.ctx.save(); // Save context state
+                
+                // Apply Fade
+                this.ctx.globalAlpha = anim.alpha; 
+                
+                // Apply Scale (Centered)
+                // To scale from center, we translate to center, scale, then draw at -width/2
+                const centerX = anim.currentX + this.cardWidth / 2;
+                const centerY = anim.currentY + this.cardHeight / 2;
+                
+                this.ctx.translate(centerX, centerY);
+                this.ctx.scale(anim.scale, anim.scale);
+                
+                // Draw mask (with the -5 offset logic if you want the visual consistency)
+                this.ctx.drawImage(img, -this.cardWidth/2, -this.cardHeight/2 - 5, this.cardWidth, this.cardHeight);
+                
+                this.ctx.restore(); // Restore context (remove fade/scale for next drawings)
+            }
+
+            else if (anim.type === 'slideStack') {
+                // Draw Card
+                const cardImg = this.assets[anim.cardId.toString()];
+                this.ctx.shadowBlur = 10;
+                this.ctx.shadowColor = "rgba(0,0,0,0.5)";
+                this.ctx.drawImage(cardImg, anim.currentX, anim.currentY, this.cardWidth, this.cardHeight);
+                
+                // Draw Mask (with -5 offset)
+                const maskImg = this.assets[anim.maskName];
+                if (maskImg) {
+                    this.ctx.drawImage(maskImg, anim.currentX, anim.currentY - 5, this.cardWidth, this.cardHeight);
+                }
+                this.ctx.shadowBlur = 0;
+            }
         });
 
+        if (this.activeTooltip) {
+            this.drawTooltip(this.activeTooltip);
+        }
+
+    }
+
+
+    drawTooltip(tip) {
+        this.ctx.save();
+
+        // 1. Measure Text & Calculate Box Size
+        this.ctx.font = "14px Minipixel"; 
+        const titleWidth = this.ctx.measureText(tip.title).width;
+        
+        this.ctx.font = "12px Minipixel"; 
+        const bodyWidth = this.ctx.measureText(tip.text).width;
+        
+        const boxWidth = Math.max(titleWidth, bodyWidth) + 30; 
+        const boxHeight = 50;
+
+        // 2. Determine Position: UP or DOWN?
+        
+        // Default: UP (Above the mask)
+        // We assume tip.y is set to (cellY - 15) by the interaction logic
+        let boxX = tip.x - boxWidth / 2;
+        let boxY = tip.y - boxHeight;
+        let arrowY = tip.y; // The point where the arrow touches the mask
+        let arrowDirection = 'down'; // Arrow points down to the mask
+
+        // CHECK: Is it going off the top screen edge?
+        // We add a safety margin (e.g., 10px)
+        if (boxY < 10) {
+            // FLIP TO DOWN
+            // We need to know the card height to place it below. 
+            // Since we don't pass card height to this function, we can estimate 
+            // or pass "tip.targetHeight" in the future.
+            // For now, let's assume tip.y was "top of card - 15".
+            // So "bottom of card" is roughly tip.y + cardHeight + 15.
+            
+            // A simpler approach without changing Interaction Logic:
+            // Just move it down by (Box Height + Card Height + Spacing)
+            const approxCardHeight = 120; 
+            
+            boxY = tip.y + approxCardHeight + 20; // Move below card
+            arrowY = boxY; // Arrow starts at top of box
+            arrowDirection = 'up'; // Arrow points up to the mask
+        }
+
+        // CHECK: Is it going off the Left or Right edges? (Optional Polish)
+        if (boxX < 10) boxX = 10; // Clamp Left
+        if (boxX + boxWidth > this.canvas.width - 10) boxX = this.canvas.width - boxWidth - 10; // Clamp Right
+
+
+        // 3. Draw Box Shadow
+        this.ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+        this.ctx.fillRect(boxX + 3, boxY + 3, boxWidth, boxHeight);
+
+        // 4. Draw Box Background
+        this.ctx.fillStyle = "#222"; 
+        this.ctx.strokeStyle = "#ffd700"; 
+        this.ctx.lineWidth = 2;
+        this.ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+        this.ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+        // 5. Draw Arrow (Dynamic Direction)
+        this.ctx.beginPath();
+        this.ctx.fillStyle = "#ffd700";
+
+        if (arrowDirection === 'down') {
+            // Box is above, Arrow points DOWN to tip.y
+            // We draw the arrow at the bottom of the box
+            const bottomOfBox = boxY + boxHeight;
+            // Ensure arrow centers on the target, relative to clamped box
+            // But visually, simpler to just center on tip.x
+            this.ctx.moveTo(tip.x - 5, bottomOfBox);
+            this.ctx.lineTo(tip.x + 5, bottomOfBox);
+            this.ctx.lineTo(tip.x, bottomOfBox + 5);
+        } else {
+            // Box is below, Arrow points UP to mask
+            // We draw the arrow at the top of the box
+            this.ctx.moveTo(tip.x - 5, boxY);
+            this.ctx.lineTo(tip.x + 5, boxY);
+            this.ctx.lineTo(tip.x, boxY - 5);
+        }
+        this.ctx.fill();
+
+        // 6. Draw Text
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        
+        // Recalculate text center based on the final boxX
+        const textCenterX = boxX + boxWidth / 2;
+        const textCenterY = boxY + boxHeight / 2;
+
+        this.ctx.fillStyle = "#ffd700";
+        this.ctx.font = "12px Minipixel";
+        this.ctx.fillText(tip.title, textCenterX, boxY + 15);
+
+        this.ctx.fillStyle = "white";
+        this.ctx.font = "10px Minipixel";
+        this.ctx.fillText(tip.text, textCenterX, boxY + 35);
+
+        this.ctx.restore();
+    }
+
+
+    getMaskDescription(maskName) {
+        // Helper to format text (Upper Case first letter)
+        const formatName = (name) => name.charAt(0).toUpperCase() + name.slice(1);
+
+        switch (maskName) {
+            case "Felicidad": 
+                return "Require carta con MAIOR valor.";
+            case "Tristeza":   
+                return "Require carta con MENOR valor.";
+            case "Ira": 
+                return "Require carta co MESMO valor.";
+            case "Conspirador": 
+                return "Require carta do MESMO pao.";
+            case "Cinismo":
+                return "Require carta dun pao e número diferente.";
+            // Add others here...
+            case "Codicia":
+                return "Requiere carta de OUROS.";
+            default: 
+                return "???";
+        }
     }
 
     drawMenuScene() {
@@ -539,6 +1005,7 @@ export default class Game {
         this.drawButton(this.startBtn);
     }
     
+    
     drawButton(btn) {
         this.ctx.fillStyle = btn.isHovered ? btn.hoverColor : btn.color;
         this.ctx.fillRect(btn.x, btn.y, btn.width, btn.height);
@@ -549,13 +1016,14 @@ export default class Game {
         this.ctx.fillText(btn.text, btn.x + btn.width/2, btn.y + btn.height/2);
     }
 
+
     handleMouseMove(mouseX, mouseY) {
         let targetBtns = [];
 
         if (this.gameState === 'MENU') targetBtns = [this.startBtn];
         else if (this.gameState === 'GAME_OVER') targetBtns = [this.restartBtn];
         else if (this.gameState === 'VICTORY') targetBtns = [this.nextLevelBtn, this.menuBtn];
-        else if (this.gameState === 'PLAYING') targetBtns = [this.drawActionBtn];
+        //else if (this.gameState === 'PLAYING') targetBtns = [this.drawActionBtn];
 
         let cursorActive = false;
 
@@ -569,6 +1037,7 @@ export default class Game {
         });
 
         this.canvas.style.cursor = cursorActive ? 'pointer' : 'default';
+        this.render();
     }
 
     isInside(x, y, btn) { return x > btn.x && x < btn.x + btn.width && y > btn.y && y < btn.y + btn.height; }

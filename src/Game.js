@@ -6,7 +6,12 @@ export default class Game {
         this.ctx = ctx;
         this.assets = assets;
         
-        this.gameState = 'MENU'; 
+        //this.gameState = 'MENU';
+        this.gameState = 'INTRO'; 
+        
+        // Configuration
+        this.introDuration = 2600;
+        this.playIntroSequence();
         this.deck = new Deck();
 
         this.rows = 4;
@@ -17,6 +22,7 @@ export default class Game {
 
         this.animations = []; // Holds flying cards
         this.isAnimating = false; // Block input while animating
+        this.isProcessing = false;
 
         this.cardWidth = 48;
         this.cardHeight = 76;
@@ -30,6 +36,16 @@ export default class Game {
         this.deckY = 368;
         this.deckHovered = false;
 
+        this.flushBtn = {
+            x: 24, 
+            y: 300, 
+            width: 42, // <--- CHANGE to your image width
+            height: 18, // <--- CHANGE to your image height
+            state: 'normal' // normal, hover, pressed, disabled
+        };
+        this.flushCount = 2;
+        this.maxFlush = 2;
+
         this.discardX = 21;
         this.discardY = 172;
 
@@ -39,10 +55,22 @@ export default class Game {
 
         this.level = 1;
 
+        
+
         this.activeTooltip = null; // Will store { x, y, title, text }
 
         // Buttons
-        this.startBtn = { x: 120, y: 350, width: 200, height: 60, text: "XOGAR", color: "#ffd700", hoverColor: "#fff", isHovered: false };
+        const btnWidth = 200; 
+        const btnHeight = 80;
+
+        this.startBtn = {
+            x: (this.canvas.width - btnWidth) / 2, // Centered X
+            y: 400,                                // Position Y
+            width: btnWidth,
+            height: btnHeight,
+            state: 'normal' // Options: 'normal', 'hover', 'pressed'
+        };
+        //this.startBtn = { x: 120, y: 350, width: 200, height: 60, text: "XOGAR", color: "#ffd700", hoverColor: "#fff", isHovered: false };
         this.restartBtn = { x: 120, y: 400, width: 200, height: 60, text: "REINTENTAR", color: "#d32f2f", hoverColor: "#ff6659", isHovered: false };
         this.nextLevelBtn = { x: 120, y: 350, width: 200, height: 60, text: "SEGUINTE NIVEL", color: "#00C851", hoverColor: "#00e25b", isHovered: false };
         this.menuBtn = { x: 120, y: 430, width: 200, height: 60, text: "MENU PRINCIPAL", color: "#33b5e5", hoverColor: "#62c9e5", isHovered: false };    
@@ -213,9 +241,21 @@ export default class Game {
     }
 
     handleClick(mouseX, mouseY) {
-        if (this.isAnimating) return;
+        if (this.isAnimating || this.isProcessing) return;
+        if (this.gameState === 'INTRO') return;
         if (this.gameState === 'MENU') {
-            if (this.isInside(mouseX, mouseY, this.startBtn)) this.startGame();
+            if (this.isInside(mouseX, mouseY, this.startBtn)) {
+                // 1. Set Visual State to PRESSED
+                this.startBtn.state = 'pressed';
+                this.render();
+
+                setTimeout(() => {
+                    this.gameState = 'PLAYING';
+                    this.startBtn.state = 'normal'; // Reset for next time
+                    this.render();
+                    this.startGame();
+                }, 150);
+            }
             return;
         } 
         if (this.gameState === 'GAME_OVER') {
@@ -229,6 +269,7 @@ export default class Game {
         }
 
         if (this.gameState === 'PLAYING') {
+            if (this.isAnimating || this.isProcessing) return;
             const wasTooltipOpen = this.activeTooltip !== null;
             this.activeTooltip = null;
 
@@ -263,6 +304,28 @@ export default class Game {
                 }
             }
 
+            if (this.isInside(mouseX, mouseY, this.flushBtn)) {
+                
+                // Ignore if disabled (Hand empty, etc.)
+                if (this.flushBtn.state === 'disabled') return;
+
+                // 1. Visual Press
+                this.flushBtn.state = 'pressed';
+                this.render();
+
+                // 2. Logic Trigger (Small delay for visual feel)
+                setTimeout(() => {
+                    if (this.flushCount > 0) {
+                        this.flushCount--;
+                        this.triggerFlushAction(); 
+                    }
+                    this.flushBtn.state = 'normal';
+                    this.render();
+                }, 150);
+                
+                return;
+            }
+
             // Check Grid
             const relativeX = mouseX - this.boardStartX;
             const relativeY = mouseY - this.boardStartY;
@@ -275,8 +338,131 @@ export default class Game {
             if (validCol && validRow) {
                 this.handleGridInteraction(row, col);
             }
+            
+            /*
+            if (this.isInside(mouseX, mouseY, this.flushBtn)) {
+                console.log("flush pressed")
+                // Guard: If disabled (0 uses left), do nothing
+                if (this.flushBtn.state === 'disabled') return;
+
+                // 1. Visual Press
+                this.flushBtn.state = 'pressed';
+                this.render();
+
+                // 2. Logic Trigger
+                setTimeout(() => {
+                    if (this.flushCount > 0) {
+                        this.flushCount--;
+                        this.triggerFlushAction(); 
+                    }
+                    this.flushBtn.state = 'normal';
+                    this.render();
+                }, 150);
+                
+                return;
+            
+            }*/
             this.render();
         }
+    }
+
+    triggerFlushAction() {
+        console.log("Flush triggered! Sequence: Discard -> Deck -> Hand -> Deck -> Shuffle.");
+        this.isProcessing = true;
+
+        // Snapshot Data
+        const originalHand = [...this.playerHand];
+        const originalDiscard = [...this.discardPile];
+        const drawAmount = originalHand.length;
+
+        // Clear Logic
+        //this.playerHand = [];
+        this.discardPile = [];
+        this.selectedCardIndex = -1;
+
+        // Start Animation Chain
+        // We pass a copy of discard for animation (which we will consume/pop)
+        // AND a copy of originalDiscard for the final shuffle logic
+        this.animateDiscardToDeck([...originalDiscard], originalDiscard, originalHand, drawAmount);
+    }
+
+    animateDiscardToDeck(animDiscardList, fullDiscardData, fullHandData, drawAmount) {
+        if (animDiscardList.length === 0) {
+            // Done with discard pile. Move to Hand.
+            this.animateHandToDeck(fullDiscardData, fullHandData, drawAmount);
+            return;
+        }
+
+        const cardId = animDiscardList.pop(); // Take one
+
+        const startX = this.discardX; // Put your Discard X here (e.g. this.deckArea.x + 150)
+        const startY = this.discardY;
+
+        this.animations.push({
+            type: 'fly',
+            targetType: 'custom',
+            cardId: cardId,
+            startX: startX,
+            startY: startY,
+            currentX: startX,
+            currentY: startY,
+            targetX: this.deckX,
+            targetY: this.deckY,
+            progress: 0,
+            speed: 0.05, // Fast!
+            onComplete: () => {}
+        });
+        this.isAnimating = true;
+
+        // Spawn next one in 50ms
+        setTimeout(() => {
+            this.animateDiscardToDeck(animDiscardList, fullDiscardData, fullHandData, drawAmount);
+        }, 150);
+    }
+
+
+
+    animateHandToDeck(fullDiscardData, fullHandData, drawAmount) {
+        // Wait 300ms for the last discard card to arrive
+        setTimeout(() => {
+            this.playerHand = [];
+            if (fullHandData.length === 0) {
+                this.performFlushShuffle(fullHandData, fullDiscardData, drawAmount);
+                return;
+            }
+
+            let landedCount = 0;
+            const handGap = 20; 
+            const totalHandWidth = (fullHandData.length * this.cardWidth) + ((fullHandData.length - 1) * handGap);
+            const handStartX = (this.canvas.width - totalHandWidth) / 2;
+
+            fullHandData.forEach((cardId, index) => {
+                const startX = handStartX + index * (this.cardWidth + handGap);
+                
+                this.animations.push({
+                    type: 'fly',
+                    targetType: 'custom',
+                    cardId: cardId,
+                    startX: startX,
+                    startY: this.playerHandY,
+                    currentX: startX,
+                    currentY: this.playerHandY,
+                    targetX: this.deckX,
+                    targetY: this.deckY,
+                    progress: 0,
+                    speed: 0.08,
+                    onComplete: () => {
+                        landedCount++;
+                        if (landedCount === fullHandData.length) {
+                            // All cards are physically in the deck now.
+                            this.performFlushShuffle(fullHandData, fullDiscardData, drawAmount);
+                        }
+                    }
+                });
+            });
+            this.isAnimating = true;
+
+        }, 300);
     }
 
 
@@ -397,6 +583,52 @@ export default class Game {
         this.isAnimating = true;
     }
 
+    performFlushShuffle(handData, discardData, drawAmount) {
+        // Logic: Add cards back
+        this.deck.cards.push(...handData);
+        this.deck.cards.push(...discardData);
+        
+        // Logic: Shuffle
+        this.deck.shuffle();
+        
+        // Logic: Draw
+        this.drawMultipleCards(drawAmount);
+    }
+
+    drawMultipleCards(totalNeeded) {
+        let cardsDrawn = 0;
+
+        // Recursive function to draw one card, wait, then draw the next
+        const drawNext = () => {
+            // Stop if we reached the target count
+            if (cardsDrawn >= totalNeeded) {
+                this.isProcessing = false; // UNLOCK GAME
+                return;
+            }
+
+            const newCard = this.deck.draw();
+            if (newCard) {
+                cardsDrawn++;
+                
+                // Fly: Deck -> Hand
+                this.triggerFlyAnimation(newCard, this.deckX, this.deckY, () => {
+                    // Slight delay between cards for better feel
+                    setTimeout(drawNext, 100); 
+                });
+            } else {
+                // Deck is empty (Unlikely after a flush, but safe to handle)
+                this.isProcessing = false;
+            }
+        };
+
+        // Start the loop
+        if (totalNeeded > 0) {
+            drawNext();
+        } else {
+            this.isProcessing = false;
+        }
+    }
+
     drawCardWithAnimation(cardId) {
         // 1. Calculate where the card SHOULD land.
         // Since we are adding to the "Leftmost" (index 0), we assume it goes to the first slot.
@@ -428,77 +660,92 @@ export default class Game {
 
     triggerDrawPenalty() {
         // 1. Guard Clauses: Don't run if animating OR if hand is full
-        if (this.isAnimating) return; 
-        if (this.isAnimating) return; 
+        if (this.isAnimating || this.isProcessing) return; 
         if (this.playerHand.length >= 5) return;
+
+        this.isProcessing = true; // LOCK
 
         // 1. Give Player a Card (Reward)
         const newCard = this.deck.draw();
-        if (newCard) {
-            this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
-        } else {
+
+        if (!newCard) {
+            this.isProcessing = false;
             return;
         }
 
-        // 2. Identify all movable masks
-        let candidates = [];
 
-        for(let r = 0; r < this.rows; r++) {
-            for(let c = 0; c < this.cols; c++) {
-                if (this.maskBoard[r][c] !== null) {
-                    
-                    // Condition A: It's at the bottom edge (Game Over move)
-                    if (r === this.rows - 1) {
-                        candidates.push({row: r, col: c, gameOver: true});
-                    } 
-                    // Condition B: The spot below is empty (Standard move)
-                    else if (this.board[r+1][c] === null) {
-                        candidates.push({row: r, col: c, gameOver: false});
+        this.triggerFlyAnimation(newCard, this.deckX, this.deckY, () => {
+            setTimeout(() => {
+                // 2. Identify all movable masks
+                let candidates = [];
+
+                for(let r = 0; r < this.rows; r++) {
+                    for(let c = 0; c < this.cols; c++) {
+                        if (this.maskBoard[r][c] !== null) {
+                            
+                            // Condition A: It's at the bottom edge (Game Over move)
+                            if (r === this.rows - 1) {
+                                candidates.push({row: r, col: c, gameOver: true});
+                            } 
+                            // Condition B: The spot below is empty (Standard move)
+                            else if (this.board[r+1][c] === null) {
+                                candidates.push({row: r, col: c, gameOver: false});
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        if (candidates.length > 0) {
-            // 3. Find "Most Behind" (The Smallest Row Index)
-            // We want to move the ones furthest from the finish line first.
-            let minRow = this.rows; // Start higher than possible (4)
-            
-            candidates.forEach(c => {
-                if (c.row < minRow) minRow = c.row;
-            });
+                if (candidates.length > 0) {
+                    // 3. Find "Most Behind" (The Smallest Row Index)
+                    // We want to move the ones furthest from the finish line first.
+                    let minRow = this.rows; // Start higher than possible (4)
+                    
+                    candidates.forEach(c => {
+                        if (c.row < minRow) minRow = c.row;
+                    });
 
-            // 4. Filter list to only include masks in that row
-            const priorityCandidates = candidates.filter(c => c.row === minRow);
+                    // 4. Filter list to only include masks in that row
+                    const priorityCandidates = candidates.filter(c => c.row === minRow);
 
-            // 5. Pick Randomly among the tied masks
-            const randomIndex = Math.floor(Math.random() * priorityCandidates.length);
-            const target = priorityCandidates[randomIndex];
+                    // 5. Pick Randomly among the tied masks
+                    const randomIndex = Math.floor(Math.random() * priorityCandidates.length);
+                    const target = priorityCandidates[randomIndex];
 
-            if (target.gameOver) {
-                console.log("Game Over: Mask reached the end.");
-                this.gameState = 'GAME_OVER';
-            } else {
-                // Move Logic
-                const r = target.row;
-                const c = target.col;
-                const nextR = r + 1;
+                    if (target.gameOver) {
+                        console.log("Game Over: Mask reached the end.");
+                        this.gameState = 'GAME_OVER';
+                    } else {
+                        console.log(`Penalty: Mask at [${target.row},${target.col}] moved to [${target.row+1},${target.col}]`);
+                        this.triggerSlideAnimation(target.row, target.col, target.row + 1, () => {
+                            this.isProcessing = false; 
+                        });
+                        /*
+                        // Move Logic
+                        const r = target.row;
+                        const c = target.col;
+                        const nextR = r + 1;
 
-                // Move Card & Mask Data
-                this.board[nextR][c] = this.board[r][c];
-                this.maskBoard[nextR][c] = this.maskBoard[r][c];
+                        // Move Card & Mask Data
+                        this.board[nextR][c] = this.board[r][c];
+                        this.maskBoard[nextR][c] = this.maskBoard[r][c];
 
-                // Clear old spot
-                this.board[r][c] = null;
-                this.maskBoard[r][c] = null;
-                
-                console.log(`Penalty: Mask at [${r},${c}] moved to [${nextR},${c}]`);
-            }
-        } else {
-            console.log("Lucky! No masks could move.");
-        }
+                        // Clear old spot
+                        this.board[r][c] = null;
+                        this.maskBoard[r][c] = null;
+                        */
+                        
+                        
+                    }
+                } else {
+                    console.log("Lucky! No masks could move.");
+                }
 
-        this.render();
+                this.render();
+            }, 300);
+        });
+
+
+        
     }
 
     getCardValue(id) { return (id - 1) % 10 + 1; }
@@ -541,6 +788,7 @@ export default class Game {
         const targetMask = this.maskBoard[row][col];
         if (!targetMask) return; 
         
+        
         // 1. INFO MODE: No card selected + Clicked on a Mask
         if (this.selectedCardIndex === -1) {
             if (targetMask) {
@@ -559,6 +807,7 @@ export default class Game {
             return; // Stop here, don't try to battle
         }
 
+        this.isProcessing = true; // Lock
         const targetCardValue = this.board[row][col];
         const playedCard = this.playerHand[this.selectedCardIndex]; 
         
@@ -597,8 +846,21 @@ export default class Game {
                                 this.gameState = 'VICTORY';
                                 return;
                             }
-                            const extraCard = this.deck.draw();
-                            if (extraCard) this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, null);
+                            if (this.playerHand.length < 5) {
+                                const extraCard = this.deck.draw();
+                                if (extraCard) {
+                                    this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, () => {
+                                        this.isProcessing = false;
+                                    });
+                                } else {
+                                    this.isProcessing = false; 
+                                }
+                            } else {
+                                console.log("Hand full (5/5). No extra card drawn.");
+                                this.isProcessing = false;
+                            }
+                            //const extraCard = this.deck.draw();
+                            //if (extraCard) this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, null);
                         });
                     }, 1000);
                 });
@@ -632,7 +894,11 @@ export default class Game {
                             // Roba carta ao rematar o movemento
                             const newCard = this.deck.draw();
                             if (newCard) {
-                                this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
+                                this.triggerFlyAnimation(newCard, this.deckX, this.deckY, () => {
+                                    this.isProcessing = false; 
+                                });
+                            } else {
+                                this.isProcessing = false;
                             }
                         });
                         /*
@@ -690,7 +956,11 @@ export default class Game {
     }
 
     drawGameScene() {
-        const boardImg = this.assets['board'];
+        let boardKey = 'board'; // Default (Normal)
+        if (this.playerHand.length >= 5 || this.isProcessing) {
+            boardKey = 'board_disabled';
+        }
+        const boardImg = this.assets[boardKey];
         if (boardImg) {
             // Option A: Stretch to fit the canvas
             this.ctx.drawImage(boardImg, 0, 0, this.canvas.width, this.canvas.height);
@@ -784,6 +1054,47 @@ export default class Game {
                 }
             }
         }
+
+        // DRAW FLUSH
+        const isFlushDisabled = this.flushCount === 0 || 
+                                this.playerHand.length === 0 || 
+                                this.isProcessing || 
+                                this.isAnimating;
+
+        // 2. Determine Visual State
+        let flushKey = 'flush_normal'; // Default
+
+        if (isFlushDisabled) {
+            flushKey = 'flush_disabled';
+            this.flushBtn.state = 'disabled'; // Sync logical state
+        } else if (this.flushBtn.state === 'pressed') {
+            flushKey = 'flush_pressed';
+        } else if (this.flushBtn.state === 'hover') {
+            flushKey = 'flush_hover';
+        } else {
+            this.flushBtn.state = 'normal';
+        }
+
+        // 3. Draw
+        const flushImg = this.assets[flushKey];
+        if (flushImg) {
+            this.ctx.drawImage(flushImg, 
+                this.flushBtn.x, 
+                this.flushBtn.y, 
+                this.flushBtn.width, 
+                this.flushBtn.height
+            );
+        }
+        // Draw Counter Text (e.g., "2/2")
+        this.ctx.fillStyle = "black";
+        this.ctx.font = "8px Minipixel"; 
+        this.ctx.textAlign = "center";
+        
+        // Position it 10px above the button
+        const textFlushX = this.flushBtn.x + (this.flushBtn.width / 2);
+        const textFlushY = this.flushBtn.y - 5; 
+        
+        this.ctx.fillText(`${this.flushCount}/${this.maxFlush}`, textFlushX, textFlushY);
 
         // --- UPDATED: Draw Hand ---
         if (this.playerHand.length > 0) {
@@ -995,14 +1306,65 @@ export default class Game {
         }
     }
 
+    playIntroSequence() {
+        // 1. Find the container we just made
+        const container = document.getElementById('game-container');
+
+        // 2. Create the GIF
+        const introImg = document.createElement('img');
+        introImg.src = './spanish_deck/menuIntro.gif'; 
+        
+        // 3. Style it to overlay perfectly
+        introImg.style.position = 'absolute';
+        introImg.style.top = '0';
+        introImg.style.left = '0';
+        //introImg.style.width = '100%';  // Matches container/canvas width
+        //introImg.style.height = '100%'; // Matches container/canvas height
+        introImg.style.zIndex = '10';   // Sit on top of canvas
+        
+        // Optional: Ensure it doesn't mess with clicks if you want to skip it
+        // introImg.style.pointerEvents = 'none'; 
+
+        // 4. Add to the container
+        container.appendChild(introImg);
+
+        // 5. Remove after duration
+        setTimeout(() => {
+            introImg.remove();
+            this.gameState = 'MENU';
+            // Force a re-render to show the menu immediately
+            this.render(); 
+        }, this.introDuration);
+    }
+
     drawMenuScene() {
-        this.ctx.fillStyle = "#1a1a1a";
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        this.ctx.fillStyle = "white";
-        this.ctx.font = "bold 80px Arial";
-        this.ctx.textAlign = "center";
-        this.ctx.fillText("LA BARAJA", this.canvas.width / 2, 200);
-        this.drawButton(this.startBtn);
+        // 1. Draw Background
+        const menuBg = this.assets['menu_bg'];
+        if (menuBg) {
+             this.ctx.drawImage(menuBg, 0, 0, this.canvas.width, this.canvas.height);
+        } else {
+             this.ctx.fillStyle = "#1a1a1a";
+             this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        }
+
+        // 2. Draw Start Button based on State
+        let btnKey = 'btn_normal'; // Default
+
+        if (this.startBtn.state === 'hover') {
+            btnKey = 'btn_hover';
+        } else if (this.startBtn.state === 'pressed') {
+            btnKey = 'btn_pressed';
+        }
+
+        const btnImg = this.assets[btnKey];
+        if (btnImg) {
+            this.ctx.drawImage(btnImg, 
+                this.startBtn.x, 
+                this.startBtn.y, 
+                this.startBtn.width, 
+                this.startBtn.height
+            );
+        }
     }
     
     
@@ -1027,6 +1389,22 @@ export default class Game {
 
         let cursorActive = false;
 
+        // Non sei
+        if (this.gameState === 'MENU') {
+            const hovering = this.isInside(mouseX, mouseY, this.startBtn);
+            
+            // Only update if we aren't currently clicking it (pressed)
+            if (this.startBtn.state !== 'pressed') {
+                if (hovering) {
+                    this.startBtn.state = 'hover';
+                    cursorActive = true;
+                } else {
+                    this.startBtn.state = 'normal';
+                }
+            }
+        }
+        // Non sei
+
         targetBtns.forEach(btn => {
             const hovering = this.isInside(mouseX, mouseY, btn);
             if (btn.isHovered !== hovering) {
@@ -1036,8 +1414,21 @@ export default class Game {
             if (hovering) cursorActive = true;
         });
 
+        // --- NEW: FLUSH BTN HOVER ---
+        // Only interact if NOT disabled and NOT currently pressed
+        if (this.flushBtn.state !== 'disabled' && this.flushBtn.state !== 'pressed') {
+            if (this.isInside(mouseX, mouseY, this.flushBtn)) {
+                this.flushBtn.state = 'hover';
+                cursorActive = true;
+            } else {
+                this.flushBtn.state = 'normal';
+            }
+        }
+
         this.canvas.style.cursor = cursorActive ? 'pointer' : 'default';
         this.render();
+
+        
     }
 
     isInside(x, y, btn) { return x > btn.x && x < btn.x + btn.width && y > btn.y && y < btn.y + btn.height; }

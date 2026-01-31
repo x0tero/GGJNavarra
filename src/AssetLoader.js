@@ -13,8 +13,17 @@ export default class AssetLoader {
 
         // 2. Load the single Back image
         promises.push(this.loadImage('back', `./spanish_deck/baralladorso.png`));
-        promises.push(this.loadImage('board', `./spanish_deck/taboleiro.png`));
+        promises.push(this.loadImage('board_disabled', `./spanish_deck/taboleiro.png`));
+        promises.push(this.loadImage('board', `./spanish_deck/taboleirod.png`));
         const fontLoad = new FontFace('Minipixel', 'url(./spanish_deck/Minipixel.ttf');
+        promises.push(this.loadImage('menu_bg', `./spanish_deck/menuEstatico.png`));
+        promises.push(this.loadImage('btn_normal', './spanish_deck/btnMenuNormal.png'));
+        promises.push(this.loadImage('btn_hover', './spanish_deck/btnMenuHover.png'));
+        promises.push(this.loadImage('btn_pressed', './spanish_deck/btnMenuPressed.png'));
+        promises.push(this.loadImage('flush_normal', './spanish_deck/flush/flush1.png'));
+        promises.push(this.loadImage('flush_hover', './spanish_deck/flush/flush2.png'));
+        promises.push(this.loadImage('flush_pressed', './spanish_deck/flush/flush3.png'));
+        promises.push(this.loadImage('flush_disabled', './spanish_deck/flush/flush4.png'));
         
         // Add the font promise to our waiting list
         promises.push(

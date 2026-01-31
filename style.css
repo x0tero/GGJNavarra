@@ -8,7 +8,23 @@ body {
     color: white;
     font-family: sans-serif;
 }
+#game-container {
+    box-sizing: border-box; 
+    position: relative;
+    padding: 0;
+    
+    /* Ensure the container shrinks to fit the canvas + border exactly */
+    display: inline-block; 
+}
+
+/* Apply to the intro image */
+#intro-overlay {
+    box-sizing: border-box;
+    /* ... other styles ... */
+}
+/*
 canvas {
     border: 4px solid #fff;
-    background-color: #87CEEB; /* Sky Blue */
+    background-color: #87CEEB; 
 }
+*/

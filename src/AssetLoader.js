@@ -74,6 +74,7 @@ export default class AssetLoader {
         const cardWidth = 48;
         const cardHeight = 76;
         const rowStartIds = [11, 21, 1, 31]; // Copas, Espadas, Oros, Bastos
+        // Oros, Copas, Espadas, Bastos
 
         for (let row = 0; row < 4; row++) {
             for (let col = 0; col < 10; col++) {

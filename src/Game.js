@@ -36,6 +36,16 @@ export default class Game {
         this.deckY = 368;
         this.deckHovered = false;
 
+        this.tutorialStep = -1; // -1 means no tutorial active
+        this.tutorialMessages = [
+            { title: "BENVIDO", text: "Existen varios tipos de máscaras, cada unha cunha condición única para ser derrotada." },
+            { title: "INFORMACIÓN", text: "Podes facer clic nunha máscara en calquera momento para ver a súa condición de vitoria." },
+            { title: "COMBATE", text: "Para derrotar unha máscara, selecciona unha carta da túa man e logo fai clic na máscara que queres eliminar." },
+            { title: "ROBAR", text: "Podes roubar cartas do mazo premendo nel, pero coidado: unha máscara baixará unha fila como penalización." },
+            { title: "DESCARTAR (FLUSH)", text: "O botón FLUSH permite barallar a túa man e o descarte de novo no mazo. Só tes 2 usos por nivel!" },
+            { title: "SORTE!", text: "Elimina todas as máscaras do taboleiro para avanzar ao seguinte nivel." }
+        ];
+
         this.flushBtn = {
             x: 24, 
             y: 300, 
@@ -53,8 +63,13 @@ export default class Game {
         this.selectedCardIndex = -1; 
         this.playerHandY = 500; 
 
-        this.level = 1;
+        this.level = 0;
+        this.levelFailures = 0; // tack total losses in the level
+        this.unlockedMasks = new Set(['Felicidad', 'Tristeza', 'Ira', 'Conspirador']);
 
+        this.isDiscoveryPause = false;
+        this.discoveryStep = 0; // 0: None, 1: "Desbloqueada", 2: "Description"
+        this.discoveryMask = null;
         
 
         this.activeTooltip = null; // Will store { x, y, title, text }
@@ -71,9 +86,9 @@ export default class Game {
             state: 'normal' // Options: 'normal', 'hover', 'pressed'
         };
         //this.startBtn = { x: 120, y: 350, width: 200, height: 60, text: "XOGAR", color: "#ffd700", hoverColor: "#fff", isHovered: false };
-        this.restartBtn = { x: 120, y: 400, width: 200, height: 60, text: "REINTENTAR", color: "#d32f2f", hoverColor: "#ff6659", isHovered: false };
-        this.nextLevelBtn = { x: 120, y: 350, width: 200, height: 60, text: "SEGUINTE NIVEL", color: "#00C851", hoverColor: "#00e25b", isHovered: false };
-        this.menuBtn = { x: 120, y: 430, width: 200, height: 60, text: "MENU PRINCIPAL", color: "#33b5e5", hoverColor: "#62c9e5", isHovered: false };    
+        this.restartBtn = { x: 90, y: 350, width: 200, height: 60, text: "Reintentar", color: "#d32f2f", hoverColor: "#ff6659", isHovered: false };
+        this.nextLevelBtn = { x: 90, y: 350, width: 200, height: 60, text: "Seguinte nivel", color: "#00C851", hoverColor: "#00e25b", isHovered: false };
+        this.menuBtn = { x: 90, y: 450, width: 200, height: 60, text: "Menú principal", color: "#33b5e5", hoverColor: "#62c9e5", isHovered: false };    
     }
 
     update() {
@@ -157,23 +172,310 @@ export default class Game {
         else if (this.gameState === 'PLAYING') this.drawGameScene();
         else if (this.gameState === 'GAME_OVER') this.drawGameOverScene();
         else if (this.gameState === 'VICTORY') this.drawVictoryScene();
+        else if (this.gameState === 'GAME_COMPLETE') this.drawGameCompleteScene();
     }
 
     startGame() {
-        this.level = 1;
+        this.level = 0;
+        this.startLevel();
+    }
+
+    restartLevel() {
         this.startLevel();
     }
 
     isValidSetup(maskName, cardId) {
         const val = this.getCardValue(cardId);
         // Impossible: Needs > 10, but card is 10
-        if (maskName === 'mascara_1' && val === 10) return false;
+        if (maskName === 'Felicidad' && val === 10) return false;
         // Impossible: Needs < 1, but card is 1
-        if (maskName === 'mascara_2' && val === 1) return false;
+        if (maskName === 'Tristeza' && val === 1) return false;
         return true;
     }
 
-    // --- NEW: SORTED START LEVEL LOGIC ---
+    startLevel() {
+        this.deck.reset();
+        this.board = Array(this.rows).fill(null).map(() => Array(this.cols).fill(null));
+        this.maskBoard = Array(this.rows).fill(null).map(() => Array(this.cols).fill(null));
+        this.discardPile = [];
+        this.playerHand = [];
+        this.masksSpawned = 0;
+        this.levelFailures = 0;
+        this.totalMasksThisLevel = this.getMaskLimitForLevel();
+        this.masksDefeated = 0;
+
+        this.selectedCardIndex = -1; // Reset selection
+        this.isProcessing = false;   // UNLOCK input for new level
+        this.pendingWinData = null;  // Clear old battle data
+        this.flushCount = 2; // Reset flush uses per level
+
+        const pool = this.getMaskPoolForLevel();
+        
+        // Setup Top Row with Sorted Logic
+        let validSetFound = false;
+        while (!validSetFound) {
+            let currentSet = [];
+            for(let i=0; i<4; i++) currentSet.push(this.deck.draw());
+            currentSet.sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+
+            let allGood = true;
+            // Check if sorted cards work with the first 4 masks in the pool
+            for(let i=0; i<4; i++) {
+                if (!this.isValidSetup(pool[i % pool.length], currentSet[i])) {
+                    allGood = false;
+                    break;
+                }
+            }
+
+            if (allGood) {
+                for(let c = 0; c < 4; c++) {
+                    this.board[0][c] = currentSet[c];
+                    // FIX: Pick a random mask from the pool instead of sequential [i % pool.length]
+                    const randomMask = pool[Math.floor(Math.random() * pool.length)];
+                    this.maskBoard[0][c] = randomMask;
+                    this.masksSpawned++;
+                }
+                validSetFound = true;
+            } else {
+                this.deck.cards.unshift(...currentSet);
+            }
+        }
+
+        this.playerHand.push(this.deck.draw());
+        this.gameState = 'PLAYING';
+
+        this.totalMasksThisLevel = this.getMaskLimitForLevel();
+        
+
+        
+
+        if (this.level === 0) {
+            // Logic to fill the first row (as we discussed before)
+            this.setupTutorialRow(); 
+            this.tutorialStep = 0;
+            this.isDiscoveryPause = true; // Use the pause logic to block game input
+            this.showTutorialStep();
+        } else {
+            this.tutorialStep = -1;
+            this.isDiscoveryPause = false;
+            this.setupRandomStartingRow();
+        }
+    
+        this.render();
+    }
+
+    setupRandomStartingRow() {
+    const pool = this.getMaskPoolForLevel();
+    let validSetFound = false;
+
+    while (!validSetFound) {
+        let currentSet = [];
+        for(let i=0; i<4; i++) currentSet.push(this.deck.draw());
+        currentSet.sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+
+        let allGood = true;
+        let selectedMasks = [];
+        for(let i=0; i<4; i++) {
+            const m = pool[Math.floor(Math.random() * pool.length)];
+            if (!this.isValidSetup(m, currentSet[i])) {
+                allGood = false;
+                break;
+            }
+            selectedMasks.push(m);
+        }
+
+        if (allGood) {
+            for(let c = 0; c < 4; c++) {
+                this.board[0][c] = currentSet[c];
+                this.maskBoard[0][c] = selectedMasks[c];
+                this.masksSpawned++;
+            }
+            validSetFound = true;
+        } else {
+            this.deck.cards.unshift(...currentSet);
+        }
+    }
+}
+
+    showTutorialStep() {
+        const msg = this.tutorialMessages[this.tutorialStep];
+        this.activeTooltip = {
+            x: this.canvas.width / 2,
+            y: this.canvas.height / 2,
+            title: msg.title,
+            text: msg.text,
+            isCentered: true
+        };
+    }
+
+    setupRandomLevel(pool, count) {
+        let placed = 0;
+        // We try to fill the board from top to bottom
+        for (let r = 0; r < this.rows && placed < count; r++) {
+            for (let c = 0; c < this.cols && placed < count; c++) {
+                
+                let validCardFound = false;
+                while (!validCardFound) {
+                    const mask = pool[Math.floor(Math.random() * pool.length)];
+                    const card = this.deck.draw();
+
+                    if (this.isValidSetup(mask, card)) {
+                        this.board[r][c] = card;
+                        this.maskBoard[r][c] = mask;
+                        validCardFound = true;
+                        placed++;
+                    } else {
+                        // Put card back and try another mask/card combo
+                        this.deck.cards.unshift(card);
+                    }
+                }
+            }
+        }
+    }
+
+
+    spawnNewRow() {
+        const currentActive = this.countActiveMasks();
+        const levelMax = this.getMaskLimitForLevel();
+        const pool = this.getMaskPoolForLevel();
+
+        // How many can we add? (Up to 4 for the row, but limited by total level count)
+        let canSpawnCount = Math.min(this.cols, levelMax - currentActive);
+
+        if (canSpawnCount <= 0) {
+            this.isProcessing = false;
+            this.render();
+            return;
+        }
+
+        // Spawn new masks in Row 0
+        for (let c = 0; c < canSpawnCount; c++) {
+            let valid = false;
+            while (!valid) {
+                const mask = pool[Math.floor(Math.random() * pool.length)];
+                const card = this.deck.draw();
+                if (this.isValidSetup(mask, card)) {
+                    this.board[0][c] = card;
+                    this.maskBoard[0][c] = mask;
+                    valid = true;
+                } else {
+                    this.deck.cards.unshift(card);
+                }
+            }
+        }
+        
+        this.isProcessing = false;
+        this.render();
+    }
+
+    getMaskLimitForLevel() {
+        if (this.level === 0) return 4;
+        if (this.level === 1) return 15;
+        if (this.level === 2) return 20;
+        return 25; // Level 3
+    }
+
+    getMaskPoolForLevel() {
+        const masks0 = ['Felicidad', 'Tristeza', 'Ira', 'Conspirador'];
+        const masks1 = [...masks0, 'Cinismo', 'Soldado', 'Codicia', 'Bruto', 'Borracho', 'Artista', 'Cabalo', 'Alteza', 'Carlista', 'Desliz', 'Preocupacion'];
+        const masks2 = [...masks1, 'Pirata', 'Presumido', 'Decepcion', 'Sorpresa', 'Afouteza'];
+        const masks3 = [...masks2, 'Enfado', 'Dereita', 'Esquerda', 'Trauma'];
+
+        if (this.level === 0) return masks0;
+        if (this.level === 1) return masks1;
+        if (this.level === 2) return masks2;
+        return masks3;
+    }
+
+
+    maybeSpawnMasks(forceSpawn = false) {
+        if (this.level === 0) return;
+        if (this.masksSpawned >= this.totalMasksThisLevel) return;
+
+        const pool = this.getMaskPoolForLevel();
+        let anySpawned = false;
+
+        for (let c = 0; c < this.cols; c++) {
+            // Only check Row 0 empty spaces
+            if (this.maskBoard[0][c] === null && this.masksSpawned < this.totalMasksThisLevel) {
+                
+                // Random chance (e.g. 40%) OR forced if board is empty
+                if (forceSpawn || Math.random() < 0.4) { 
+                    let valid = false;
+                    while (!valid) {
+                        const mask = pool[Math.floor(Math.random() * pool.length)];
+                        const card = this.deck.draw();
+                        if (this.isValidSetup(mask, card)) {
+                            this.board[0][c] = card;
+                            this.maskBoard[0][c] = mask;
+                            this.masksSpawned++;
+                            valid = true;
+                            anySpawned = true;
+                        } else {
+                            this.deck.cards.unshift(card);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Safety: If board is empty and nothing spawned randomly, force one.
+        if (this.countActiveMasks() === 0 && !anySpawned && this.masksSpawned < this.totalMasksThisLevel) {
+            this.maybeSpawnMasks(true);
+        }
+    }
+
+
+    setupTutorial(masks) {
+        // Level 0 logic: Just the top row
+        for (let col = 0; col < 4; col++) {
+            let valid = false;
+            while (!valid) {
+                const card = this.deck.draw();
+                if (this.isValidSetup(masks[col], card)) {
+                    this.board[0][col] = card;
+                    this.maskBoard[0][col] = masks[col];
+                    valid = true;
+                } else {
+                    this.deck.cards.unshift(card);
+                }
+            }
+        }
+    }
+
+    setupTutorialRow() {
+    const tutorialMasks = ["Felicidad", "Tristeza", "Ira", "Conspirador"];
+    let validSetFound = false;
+
+    while (!validSetFound) {
+        let currentSet = [];
+        for(let i = 0; i < 4; i++) currentSet.push(this.deck.draw());
+        
+        // Sort Ascending: Left=Low, Right=High
+        currentSet.sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+
+        let allGood = true;
+        for(let i = 0; i < 4; i++) {
+            if (!this.isValidSetup(tutorialMasks[i], currentSet[i])) {
+                allGood = false;
+                break;
+            }
+        }
+
+        if (allGood) {
+            for(let c = 0; c < 4; c++) {
+                this.board[0][c] = currentSet[c];
+                this.maskBoard[0][c] = tutorialMasks[c];
+                this.masksSpawned++;
+            }
+            validSetFound = true;
+        } else {
+            // Recalculate if the random cards didn't fit the fixed tutorial masks
+            this.deck.cards.unshift(...currentSet);
+        }
+    }
+}
+    /*
     startLevel() {
         this.deck.reset();
         this.board = Array(this.rows).fill(null).map(() => Array(this.cols).fill(null));
@@ -182,8 +484,35 @@ export default class Game {
         this.playerHand = [];
 
         // 1. Define the Masks for the first row
-        const masks = ['Felicidad', 'Tristeza', 'Ira', 'Conspirador'];
-        //const masks = ['mascara_1', 'mascara_2', 'mascara_3', 'mascara_4'];
+        //const masks = ['Felicidad', 'Tristeza', 'Ira', 'Conspirador'];
+
+        // Tests
+        // Mascaras tutorial
+        const masks = ['Felicidad', 'Tristeza', 'Ira', 'Conspirador']
+
+        const maskCountForLvl1 = 20
+        const masksForLvl1 = ['Felicidad', 'Tristeza', 'Ira', 'Conspirador', 
+            'Cinismo', 'Soldado', 'Codicia', 'Bruto', 'Borracho', 'Artista', 
+            'Cabalo', 'Alteza', 'Carlista', 'Desliz', 'Preocupacion'
+        ];
+
+        const maskCountForLvl2 = 30
+        const masksForLvl2 = ['Felicidad', 'Tristeza', 'Ira', 'Conspirador', 
+            'Cinismo', 'Soldado', 'Codicia', 'Bruto', 'Borracho', 'Artista', 
+            'Cabalo', 'Alteza', 'Carlista', 'Desliz', 'Preocupacion', 'Pirata',
+            'Presumido', 'Decepcion', 'Sorpresa', 'Afouteza'
+        ];
+
+        const maskCountForLvl3 = 35
+        const masksForLvl3 = ['Felicidad', 'Tristeza', 'Ira', 'Conspirador', 
+            'Cinismo', 'Soldado', 'Codicia', 'Bruto', 'Borracho', 'Artista', 
+            'Cabalo', 'Alteza', 'Carlista', 'Desliz', 'Preocupacion', 'Pirata',
+            'Presumido', 'Decepcion', 'Sorpresa', 'Afouteza', 'Enfado', 'Dereita',
+            'Esquerda', 'Trauma'
+        ];
+
+        
+        
 
         let validSetFound = false;
         let sortedCards = [];
@@ -228,7 +557,7 @@ export default class Game {
 
         this.gameState = 'PLAYING';
         this.render();
-    }
+    }*/
 
     nextLevel() {
         this.level++;
@@ -241,7 +570,52 @@ export default class Game {
     }
 
     handleClick(mouseX, mouseY) {
-        if (this.isAnimating || this.isProcessing) return;
+        // --- 1. TUTORIAL LOGIC ---
+        if (this.level === 0 && this.tutorialStep !== -1 && this.gameState == 'PLAYING') {
+            this.tutorialStep++;
+            if (this.tutorialStep < this.tutorialMessages.length) {
+                this.showTutorialStep();
+            } else {
+                this.tutorialStep = -1;
+                this.isDiscoveryPause = false;
+                this.activeTooltip = null;
+                this.isProcessing = false; // Unlock game
+            }
+            this.render();
+            return;
+        }
+        //if (this.isAnimating || this.isProcessing) return;
+        if (this.isDiscoveryPause && this.gameState == 'PLAYING') {
+            if (this.discoveryStep === 1) {
+                // Move to description
+                this.discoveryStep = 2;
+                this.activeTooltip.text = this.getMaskDescription(this.discoveryMask);
+            } else {
+                // Close discovery and finish the animation
+                const data = this.pendingWinData;
+                this.unlockedMasks.add(this.discoveryMask);
+                this.isDiscoveryPause = false;
+                this.discoveryStep = 0;
+                this.activeTooltip = null;
+                
+                // Find the mask data we saved and continue the game animations
+                // Note: You might want to save the row/col/card data to the game object temp
+                this.continueWinSequence(data.mask, data.row, data.col, data.playedCard, data.cardHandX, data.cardHandY);
+                /*
+                this.continueWinSequence(
+                    this.discoveryMask, 
+                    this.lastWinRow, 
+                    this.lastWinCol, 
+                    this.lastCapturedId, 
+                    this.lastWinX, 
+                    this.lastWinY
+                );
+                */
+            }
+            this.render();
+            return;
+        }
+
         if (this.gameState === 'INTRO') return;
         if (this.gameState === 'MENU') {
             if (this.isInside(mouseX, mouseY, this.startBtn)) {
@@ -259,14 +633,30 @@ export default class Game {
             return;
         } 
         if (this.gameState === 'GAME_OVER') {
-            if (this.isInside(mouseX, mouseY, this.restartBtn)) this.startGame();
+            if (this.isInside(mouseX, mouseY, this.restartBtn)) {
+                this.isAnimating = false;
+                this.isProcessing = false;
+                this.restartLevel();
+            }
+            else if (this.isInside(mouseX, mouseY, this.menuBtn)) this.goToMenu();
             return;
         }
+
+        if (this.gameState === 'VICTORY' || this.gameState === 'GAME_COMPLETE') {
+            if (this.isInside(mouseX, mouseY, this.nextLevelBtn) && this.gameState === 'VICTORY') {
+                this.nextLevel();
+            } else if (this.isInside(mouseX, mouseY, this.menuBtn)) {
+                this.goToMenu();
+            }
+            return;
+        }
+        /*
         if (this.gameState === 'VICTORY') {
             if (this.isInside(mouseX, mouseY, this.nextLevelBtn)) this.nextLevel();
             else if (this.isInside(mouseX, mouseY, this.menuBtn)) this.goToMenu();
             return;
         }
+        */
 
         if (this.gameState === 'PLAYING') {
             if (this.isAnimating || this.isProcessing) return;
@@ -418,6 +808,52 @@ export default class Game {
         setTimeout(() => {
             this.animateDiscardToDeck(animDiscardList, fullDiscardData, fullHandData, drawAmount);
         }, 150);
+    }
+
+    continueWinSequence(mask, row, col, playedCard, cardHandX, cardHandY) {
+        this.playerHand.splice(this.playerHand.indexOf(playedCard), 1);
+        this.selectedCardIndex = -1;
+
+        // ANIMATION: Hand -> Discard
+        this.triggerDiscardAnimation(playedCard, cardHandX, cardHandY, () => {
+            const cellX = this.boardStartX + col * (this.cardWidth + this.gap);
+            const cellY = this.boardStartY + row * (this.cardHeight + this.gap);
+            const capturedCardId = this.board[row][col];
+
+            this.triggerMaskWipe(mask, cellX, cellY, () => {
+                this.maskBoard[row][col] = null;
+                this.masksDefeated++;
+
+                setTimeout(() => {
+                    this.board[row][col] = null;
+                    this.triggerFlyAnimation(capturedCardId, cellX, cellY, () => {
+                        if (this.checkVictory()) {
+                            if (this.level >= 3) {
+                                this.gameState = 'GAME_COMPLETE';
+                            } else {
+                                this.gameState = 'VICTORY';
+                            }
+                            return;
+                        }
+
+                        this.maybeSpawnMasks();
+
+                        if (this.playerHand.length < 5) {
+                            const extraCard = this.deck.draw();
+                            if (extraCard) {
+                                this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, () => {
+                                    this.isProcessing = false;
+                                });
+                            } else {
+                                this.isProcessing = false;
+                            }
+                        } else {
+                            this.isProcessing = false;
+                        }
+                    });
+                }, 1000);
+            });
+        });
     }
 
 
@@ -717,7 +1153,9 @@ export default class Game {
                     } else {
                         console.log(`Penalty: Mask at [${target.row},${target.col}] moved to [${target.row+1},${target.col}]`);
                         this.triggerSlideAnimation(target.row, target.col, target.row + 1, () => {
-                            this.isProcessing = false; 
+                            this.maybeSpawnMasks();
+                            this.isProcessing = false;
+                            
                         });
                         /*
                         // Move Logic
@@ -751,11 +1189,13 @@ export default class Game {
     getCardValue(id) { return (id - 1) % 10 + 1; }
     getCardSuit(id) { return Math.floor((id - 1) / 10); }
 
-    checkBattleWin(maskName, playerCardId, boardCardId) {
+    checkBattleWin(maskName, playerCardId, boardCardId, row, col, depth=0) {
         const pVal = this.getCardValue(playerCardId);
         const bVal = this.getCardValue(boardCardId);
         const pSuit = this.getCardSuit(playerCardId);
         const bSuit = this.getCardSuit(boardCardId);
+        let bParity = 0;
+        let pParity = 0;
 
         switch (maskName) {
             case "Felicidad":
@@ -769,12 +1209,98 @@ export default class Game {
             
             case "Ira": 
                 return pVal === bVal;
-                
+            
+            case "Cinismo":
+                return (pVal !== bVal) && (pSuit !== bSuit);
+            
+            case "Soldado":
+                return (pSuit === 2);
+            
+            case "Desliz":
+                bParity = (bVal % 2 === 0);
+                pParity = (pVal % 2 === 0);
+                return (pParity !== bParity);
+            
+            case "Preocupacion":
+                bParity = (bVal % 2 === 0);
+                pParity = (pVal % 2 === 0);
+                return (pParity === bParity) && (pSuit === bSuit);
+            
+            case "Sorpresa":
+                // IMPOSIBLE SE OCULTA UN 7
+                console.log(`Valor da carta: ${bVal} de ${bSuit}`);
+                let bValor = bVal > 7 ? bVal + 2 : bVal;
+                let pValor = pVal > 7 ? pVal + 2 : pVal;
+                let sumaSete = (bValor + pValor) === 7;
+                let restaSete = Math.abs(bValor - pValor) === 7;
+                return sumaSete || restaSete;
+            
+            case "Trauma":
+                return (pVal + 1 === bVal) || (pVal - 1 === bVal) || (pVal === bVal);
+            
+            case "Afouteza":
+                const totalMasks = this.countActiveMasks();
+                return (pVal === totalMasks);
+            
+            case "Bruto":
+                return (pSuit === 3);
+
+            case "Decepcion":
+                const cartaBaixa = this.lowestCard()
+                return (pVal === cartaBaixa);
+            
+            case "Enfado":
+                let pValor1 = pVal > 7 ? pVal + 2 : pVal;
+                return (pValor1 === this.levelFailures);
+            
+            case "Presumido":
+                const cartaAlta = this.highestCard()
+                return (pVal === cartaAlta);
+
+            case "Dereita":
+                // Imposible na ultima columna
+                const targetCol = col + 1;
+                if (targetCol >= this.cols) return false;
+                const neighborMask = this.maskBoard[row][targetCol];
+                if (!neighborMask) return false;
+                return this.checkBattleWin(neighborMask, playerCardId, boardCardId, row, targetCol, depth + 1);
+            
+            case "Esquerda":
+                // Imposible na primeira columna
+                const targetCol1 = col - 1;
+                if (targetCol1 >= this.cols) return false;
+                const neighborMask1 = this.maskBoard[row][targetCol1];
+                if (!neighborMask1) return false;
+                return this.checkBattleWin(neighborMask1, playerCardId, boardCardId, row, targetCol1, depth + 1);
+            
+            case "Borracho":
+                return (pSuit === 1);
+            
+            case "Alteza":
+                return (pVal === 10);
+
+            case "Cabalo":
+                return (pVal === 9);
+            
+            case "Carlista":
+                return (pVal === 8);
+            
+            case "Artista": // un arriba ou un abaixo
+                return (pVal + 1 === bVal) || (pVal - 1 === bVal)
+            
+            case "Pirata":
+                // IMPOSIBLE SE GARDA UN REI
+                // Dificil
+                return ((pSuit === 1)  || (pSuit == 0)) && (pVal > bVal);
+            
+            case "Codicia":
+                return (pSuit === 0);
 
             default: return false;
         }
     }
 
+    /*
     checkVictory() {
         for (let r = 0; r < this.rows; r++) {
             for (let c = 0; c < this.cols; c++) {
@@ -782,6 +1308,12 @@ export default class Game {
             }
         }
         return true; 
+    }*/
+
+    checkVictory() {
+        const boardEmpty = this.countActiveMasks() === 0;
+        const allSpawned = this.masksSpawned >= this.totalMasksThisLevel;
+        return boardEmpty && allSpawned;
     }
 
     handleGridInteraction(row, col) {
@@ -795,12 +1327,14 @@ export default class Game {
                 // Calculate position above the card
                 const cellX = this.boardStartX + col * (this.cardWidth + this.gap);
                 const cellY = this.boardStartY + row * (this.cardHeight + this.gap);
-                
+
+                const isUnlocked = this.unlockedMasks.has(targetMask);
+
                 this.activeTooltip = {
                     x: cellX + this.cardWidth / 2, // Center X
                     y: cellY - 15,                 // Slightly above the card
-                    title: targetMask.toUpperCase(),
-                    text: this.getMaskDescription(targetMask)
+                    title: isUnlocked ? targetMask.toUpperCase() : "???",
+                    text: isUnlocked ? this.getMaskDescription(targetMask) : "Derrota esta máscara para coñecer a súa condición."
                 };
             }
             this.render();
@@ -812,7 +1346,7 @@ export default class Game {
         const playedCard = this.playerHand[this.selectedCardIndex]; 
         
         // Calculate Win/Loss
-        const playerWins = this.checkBattleWin(targetMask, playedCard, targetCardValue);
+        const playerWins = this.checkBattleWin(targetMask, playedCard, targetCardValue, row, col);
 
         // --- PREPARE FOR ANIMATION ---
         
@@ -826,101 +1360,173 @@ export default class Game {
 
         if (playerWins) {
             console.log("WIN!");
-            // (Your existing Win Sequence with Ghost Wipe)
-            //this.maskBoard[row][col] = null;
-            this.playerHand.splice(this.selectedCardIndex, 1);
-            this.selectedCardIndex = -1; // Reset selection
-            // ANIMATION: Hand -> Discard
-            this.triggerDiscardAnimation(playedCard, cardHandX, cardHandY, () => {
-                // After discard lands, do the capture logic
-                const cellX = this.boardStartX + col * (this.cardWidth + this.gap);
-                const cellY = this.boardStartY + row * (this.cardHeight + this.gap);
-                const capturedCardId = this.board[row][col];
+            // Discovery
+            const capturedCardId = this.board[row][col];
+            const cellX = this.boardStartX + col * (this.cardWidth + this.gap);
+            const cellY = this.boardStartY + row * (this.cardHeight + this.gap);
 
-                this.triggerMaskWipe(targetMask, cellX, cellY, () => {
-                    this.maskBoard[row][col] = null;
-                    setTimeout(() => {
-                        this.board[row][col] = null;
-                        this.triggerFlyAnimation(capturedCardId, cellX, cellY, () => {
-                            if (this.checkVictory()) {
-                                this.gameState = 'VICTORY';
-                                return;
-                            }
-                            if (this.playerHand.length < 5) {
-                                const extraCard = this.deck.draw();
-                                if (extraCard) {
-                                    this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, () => {
-                                        this.isProcessing = false;
-                                    });
-                                } else {
-                                    this.isProcessing = false; 
-                                }
-                            } else {
-                                console.log("Hand full (5/5). No extra card drawn.");
-                                this.isProcessing = false;
-                            }
-                            //const extraCard = this.deck.draw();
-                            //if (extraCard) this.triggerFlyAnimation(extraCard, this.deckX, this.deckY, null);
-                        });
-                    }, 1000);
-                });
-            });
+            // 1. Check for New Discovery
+            if (!this.unlockedMasks.has(targetMask)) {
+                this.isDiscoveryPause = true;
+                this.discoveryStep = 1;
+                this.discoveryMask = targetMask;
+                this.unlockedMasks.add(targetMask);
+                
+                // Snapshot
+                this.pendingWinData = { mask: targetMask, row, col, playedCard, cardHandX, cardHandY };
 
+                // Show the first tooltip (Centered)
+                this.activeTooltip = {
+                    x: this.canvas.width / 2,
+                    y: this.canvas.height / 2 + 30, // Positioning for the "flip" logic in drawTooltip
+                    title: targetMask.toUpperCase(),
+                    text: "¡MÁSCARA DESBLOQUEADA!",
+                    isCentered: true // We'll add this flag
+                };
+                this.render();
+                return; // STOP HERE. The rest happens in handleClick.
+            }
+            this.continueWinSequence(targetMask, row, col, playedCard, cardHandX, cardHandY);
         } else {
             console.log("LOSE!");
-            
-            // --- SEQUENCE: SHAKE -> DISCARD -> PENALTY ---
+            this.levelFailures++;
 
-            // 1. Trigger Shake
             this.triggerShakeAnimation(row, col, () => {
-
                 this.playerHand.splice(this.selectedCardIndex, 1);
-                this.selectedCardIndex = -1; // Reset selection
+                this.selectedCardIndex = -1;
 
-                // 2. Shake Done: Fly Card to Discard
                 this.triggerDiscardAnimation(playedCard, cardHandX, cardHandY, () => {
                     
-                    // 3. Flight Done: Apply Penalty Logic
-                    if (row === this.rows - 1) {
-                        this.gameState = 'GAME_OVER';
-                        this.render();
-                        return; 
-                    }
-
-                    const nextRow = row + 1;
-                    if (nextRow < this.rows && this.board[nextRow][col] === null) {
-                        // 3. NEW: Slide Animation
-                        this.triggerSlideAnimation(row, col, nextRow, () => {
-                            // Roba carta ao rematar o movemento
-                            const newCard = this.deck.draw();
-                            if (newCard) {
-                                this.triggerFlyAnimation(newCard, this.deckX, this.deckY, () => {
-                                    this.isProcessing = false; 
-                                });
-                            } else {
-                                this.isProcessing = false;
-                            }
+                    if (targetMask === 'Trauma') {
+                        this.triggerTraumaPenalty(() => {
+                            this.finishTurnAfterPenalty();
                         });
-                        /*
-                        this.board[nextRow][col] = this.board[row][col];
-                        this.board[row][col] = null;
-                        this.maskBoard[nextRow][col] = this.maskBoard[row][col];
-                        this.maskBoard[row][col] = null;
-                        */
+                    } else {
+                        // NEW: Push logic that handles occupied slots below
+                        this.pushMaskDown(row, col, () => {
+                            this.finishTurnAfterPenalty();
+                        });
                     }
-
-                    
-
-                    // 4. Draw Replacement Card
-                    //const newCard = this.deck.draw();
-                    //if (newCard) {
-                    //    this.triggerFlyAnimation(newCard, this.deckX, this.deckY, null);
-                    //}
                 });
             });
         }
-    
     }
+
+
+
+    pushMaskDown(row, col, onComplete) {
+        // 1. Check for Game Over: Is there ANY mask in this column that will fall off?
+        // We check from the target row down to the bottom.
+        let willTriggerGameOver = false;
+        for (let r = row; r < this.rows; r++) {
+            if (this.maskBoard[r][col] !== null && r === this.rows - 1) {
+                willTriggerGameOver = true;
+                break;
+            }
+        }
+
+        if (willTriggerGameOver) {
+            this.gameState = 'GAME_OVER';
+            this.render();
+            return; 
+        }
+
+        // 2. Perform the push (Bottom-to-Top to avoid overwriting)
+        // We find every mask starting from the one we clicked down to the last one in the column
+        let pushTargets = [];
+        for (let r = this.rows - 2; r >= row; r--) {
+            if (this.maskBoard[r][col] !== null) {
+                pushTargets.push(r);
+            }
+        }
+
+        if (pushTargets.length === 0) {
+            onComplete();
+            return;
+        }
+
+        let finished = 0;
+        pushTargets.forEach(r => {
+            this.triggerSlideAnimation(r, col, r + 1, () => {
+                finished++;
+                if (finished === pushTargets.length) {
+                    // After sliding everyone down, Row 0 might be open
+                    this.maybeSpawnMasks();
+                    onComplete();
+                }
+            });
+        });
+    }
+
+    // Helper to clean up the end of a penalty turn
+    finishTurnAfterPenalty() {
+        const newCard = this.deck.draw();
+        if (newCard) {
+            this.triggerFlyAnimation(newCard, this.deckX, this.deckY, () => {
+                this.isProcessing = false;
+            });
+        } else {
+            this.isProcessing = false;
+        }
+    }
+
+
+    
+    triggerTraumaPenalty(onCompleteCallback) {
+        this.isProcessing = true; // Lock input
+        
+        // 1. Check for GAME OVER
+        // If ANY mask is in the bottom row, moving them down kills the player.
+        let gameOver = false;
+        for (let c = 0; c < this.cols; c++) {
+            if (this.maskBoard[this.rows - 1][c] !== null) {
+                gameOver = true;
+                break;
+            }
+        }
+
+        if (gameOver) {
+            console.log("Trauma Penalty: Masks hit bottom. Game Over.");
+            this.gameState = 'GAME_OVER';
+            this.render();
+            // No need to animate, game is done.
+            return; 
+        }
+        
+        let totalMovers = 0;
+        let finishedAnimations = 0;
+
+
+        for(let r = 0; r < this.rows - 1; r++) {
+            for(let c = 0; c < this.cols; c++) {
+                if (this.maskBoard[r][c] !== null){
+                    totalMovers++;
+                } 
+            }
+        }
+
+        if (totalMovers === 0) {
+            if (onCompleteCallback) onCompleteCallback();
+            return;
+        }
+        const checkAllDone = () => {
+            finishedAnimations++;
+            // Only run the main callback when the LAST card finishes moving
+            if (finishedAnimations === totalMovers) {
+                if (onCompleteCallback) onCompleteCallback();
+            }
+        };
+        for(let r = 0; r < this.rows - 1; r++) {
+            for(let c = 0; c < this.cols; c++) {
+                if (this.maskBoard[r][c] !== null){
+                    this.triggerSlideAnimation(r, c, r + 1, checkAllDone)
+                }
+            }
+        }
+        
+    }
+    
+
 
     drawVictoryScene() {
         this.ctx.fillStyle = "#0d2b0d"; 
@@ -946,13 +1552,14 @@ export default class Game {
         this.ctx.fillStyle = "#ff4444"; 
         this.ctx.font = "20px Minipixel"//"bold 80px Arial";
         this.ctx.textAlign = "center";
-        this.ctx.fillText("FIN DO XOGO", this.canvas.width / 2, 250);
+        this.ctx.fillText("DERROTA TOTAL", this.canvas.width / 2, 250);
 
         this.ctx.fillStyle = "white";
         this.ctx.font = "10px Minipixel"//"24px Arial";
         this.ctx.fillText("A máscara chegou ao final.", this.canvas.width / 2, 300);
 
         this.drawButton(this.restartBtn);
+        this.drawButton(this.menuBtn);
     }
 
     drawGameScene() {
@@ -978,7 +1585,7 @@ export default class Game {
         this.ctx.fillStyle = "rgba(0,0,0,0.3)";
         this.ctx.font = "15px minipixel";//"bold 20px Arial";
         this.ctx.textAlign = "left";
-        this.ctx.fillText(`NIVEL: ${this.level}`, 20, 30);
+        this.ctx.fillText(`Nivel: ${this.level}`, 20, 30);
 
 
         // DRAW BUTTON STATE LOGIC
@@ -996,6 +1603,19 @@ export default class Game {
         }
         */
         //this.drawButton(this.drawActionBtn);
+
+
+        this.ctx.fillStyle = "rgba(0,0,0,0.5)"; // Semi-transparent background for readability
+        this.ctx.font = "10px Minipixel";
+        this.ctx.textAlign = "left";
+
+        // Logic: masksRemaining = Total - (Total - activeOnBoard - discarded)
+        // Simpler: Just track how many have been DEFEATED
+        //const masksDefeated = this.masksSpawned - this.countActiveMasks();
+        //const masksLeft = this.totalMasksThisLevel - masksDefeated;
+        const masksLeft = this.totalMasksThisLevel - this.masksDefeated;
+
+        this.ctx.fillText(`Mascaras restantes: ${masksLeft}/${this.totalMasksThisLevel}`, 20, 50);
 
         const backImg = this.assets['back'];
         if (backImg) {
@@ -1050,7 +1670,18 @@ export default class Game {
                 const maskValue = this.maskBoard[row][col];
                 if (maskValue !== null) {
                     const maskImg = this.assets[maskValue];
-                    if (maskImg) this.ctx.drawImage(maskImg, x, y - 3, this.cardWidth, this.cardHeight);
+                    if (maskImg) {
+                        if (!this.unlockedMasks.has(maskValue)) {
+                            // Option: Draw a dark overlay if locked to make it look mysterious
+                            this.ctx.save();
+                            this.ctx.filter = "brightness(95%) contrast(100%)"; // CSS-like filters in Canvas
+                            this.ctx.drawImage(maskImg, x, y - 3, this.cardWidth, this.cardHeight);
+                            this.ctx.restore();
+                        } else {
+                            this.ctx.drawImage(maskImg, x, y - 3, this.cardWidth, this.cardHeight);
+                        }
+                    }
+                    //if (maskImg) this.ctx.drawImage(maskImg, x, y - 3, this.cardWidth, this.cardHeight);
                 }
             }
         }
@@ -1114,8 +1745,8 @@ export default class Game {
                 const x = startX + index * (this.cardWidth + handGap);
                 
                 if (index === this.selectedCardIndex) {
-                    this.ctx.shadowBlur = 25;
-                    this.ctx.shadowColor = "#00ff00";
+                    this.ctx.shadowBlur = 20;
+                    this.ctx.shadowColor = "#000000";
                     this.ctx.drawImage(img, x, this.playerHandY - 10, this.cardWidth, this.cardHeight);
                 } else {
                     this.ctx.shadowBlur = 0;
@@ -1183,7 +1814,7 @@ export default class Game {
 
     }
 
-
+    /*
     drawTooltip(tip) {
         this.ctx.save();
 
@@ -1281,7 +1912,125 @@ export default class Game {
 
         this.ctx.restore();
     }
+    */
 
+    drawTooltip(tip) {
+        this.ctx.save();
+        
+        const padding = 15;
+        const maxBodyWidth = 180; // Limit the text width
+        this.ctx.font = "10px Minipixel"; 
+        
+        // --- STEP 1: Wrap the text into an array of lines ---
+        const words = tip.text.split(' ');
+        let lines = [];
+        let currentLine = words[0];
+
+        for (let i = 1; i < words.length; i++) {
+            let testLine = currentLine + " " + words[i];
+            let metrics = this.ctx.measureText(testLine);
+            if (metrics.width > maxBodyWidth) {
+                lines.push(currentLine);
+                currentLine = words[i];
+            } else {
+                currentLine = testLine;
+            }
+        }
+        lines.push(currentLine);
+
+        // --- STEP 2: Calculate Box Size ---
+        this.ctx.font = "14px Minipixel";
+        const titleWidth = this.ctx.measureText(tip.title).width;
+        
+        // Box width is either the title or the max width we allowed
+        const boxWidth = Math.max(titleWidth, maxBodyWidth) + (padding * 2);
+        const lineHeight = 12;
+        const titleSectionHeight = 25;
+        const boxHeight = titleSectionHeight + (lines.length * lineHeight) + padding;
+
+        // --- STEP 3: Positioning (Flip logic) ---
+        let boxX = tip.x - boxWidth / 2;
+        let boxY = tip.y - boxHeight;
+        let arrowDirection = 'down';
+
+        if (tip.isCentered) {
+            boxY = (this.canvas.height - boxHeight) / 2;
+        }
+
+       
+        if (boxY < 10) {
+            const approxCardHeight = 100;
+            boxY = tip.y + approxCardHeight + 20;
+            arrowDirection = 'up';
+        }
+
+        // Clamp to screen edges
+        if (boxX < 5) boxX = 5;
+        if (boxX + boxWidth > this.canvas.width - 5) boxX = this.canvas.width - boxWidth - 5;
+
+        // --- STEP 4: Draw Box & Arrow ---
+        // Shadow
+        this.ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+        this.ctx.fillRect(boxX + 3, boxY + 3, boxWidth, boxHeight);
+
+        // Background
+        this.ctx.fillStyle = "#222";
+        this.ctx.strokeStyle = "#ffd700";
+        this.ctx.lineWidth = 2;
+        this.ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+        this.ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+        // Arrow
+        if (!tip.isCentered) {
+            this.ctx.beginPath();
+            this.ctx.fillStyle = "#ffd700";
+            if (arrowDirection === 'down') {
+                this.ctx.moveTo(tip.x - 6, boxY + boxHeight);
+                this.ctx.lineTo(tip.x + 6, boxY + boxHeight);
+                this.ctx.lineTo(tip.x, boxY + boxHeight + 5);
+            } else {
+                this.ctx.moveTo(tip.x - 6, boxY);
+                this.ctx.lineTo(tip.x + 6, boxY);
+                this.ctx.lineTo(tip.x, boxY - 6);
+            }
+            this.ctx.fill();
+        }
+        // --- STEP 5: Draw Title and Wrapped Body ---
+        this.ctx.textAlign = "center";
+        
+        // Title
+        this.ctx.fillStyle = "#ffd700";
+        this.ctx.font = "12px Minipixel";
+        this.ctx.fillText(tip.title, boxX + boxWidth / 2, boxY + 18);
+
+        // Body Lines
+        this.ctx.fillStyle = "white";
+        this.ctx.font = "10px Minipixel";
+        lines.forEach((line, index) => {
+            this.ctx.fillText(line, boxX + boxWidth / 2, boxY + titleSectionHeight + (index * lineHeight) + 10);
+        });
+
+        this.ctx.restore();
+    }
+
+    drawGameCompleteScene() {
+        // Dark gold/black background
+        this.ctx.fillStyle = "#1a1300"; 
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+        this.ctx.fillStyle = "#ffd700"; 
+        this.ctx.font = "24px Minipixel";
+        this.ctx.textAlign = "center";
+        this.ctx.fillText("¡PARABÉNS!", this.canvas.width / 2, 180);
+
+        this.ctx.fillStyle = "white";
+        this.ctx.font = "12px Minipixel";
+        this.ctx.fillText("Completaches todos os niveis.", this.canvas.width / 2, 230);
+        this.ctx.fillText("Es un mestre das máscaras.", this.canvas.width / 2, 250);
+
+        // Reuse the menu button logic
+        this.drawButton(this.menuBtn);
+    }
 
     getMaskDescription(maskName) {
         // Helper to format text (Upper Case first letter)
@@ -1298,9 +2047,44 @@ export default class Game {
                 return "Require carta do MESMO pao.";
             case "Cinismo":
                 return "Require carta dun pao e número diferente.";
-            // Add others here...
+            case "Soldado":
+                return "Require carta do pao de ESPADAS";
+            case "Desliz":
+                return "Require carta con valor de paridade oposta";
+            case "Preocupacion":
+                return "Require carta da mesma paridade e o mesmo pao";
+            case "Sorpresa":
+                return "Require carta que ao ser sumada ou restada de como resultado o número 7.";
+            case "Trauma":
+                return "Require carta co mesmo valor, o seguinte ou o anterior. Penalizacion extra ao fallar.";
+            case "Afouteza":
+                return "Require unha carta de valor igual ao numero de mascaras no taboleiro.";
+            case "Bruto":
+                return "Require carta de BASTOS";
+            case "Decepción":
+                return "Require carta de menor valor entre as cartas da túa man.";
+            case "Enfado":
+                return "Require carta de valor igual ao número de veces que fallache neste nivel."
+            case "Presumido":
+                return "Require carta de maior valor entre as cartas da túa man.";
+            case "Dereita":
+                return "Ten a condición da carta da DEREITA";
+            case "Esquerda":
+                return "Ten a condición da carta da ESQUERDA";
+            case "Borracho":
+                return "Require carta de COPAS";
+            case "Alteza":
+                return "Require carta de REI";
+            case "Cabalo":
+                return "Require carta de CABALO";
+            case "Carlista":
+                return "Require carta de SOTA";
+            case "Artista":
+                return "Require a seguinte carta ou a anterior carta";
+            case "Pirata":
+                return "Require carta de OUROS ou COPAS que sexan de MAIOR valor";
             case "Codicia":
-                return "Requiere carta de OUROS.";
+                return "Require carta de OUROS.";
             default: 
                 return "???";
         }
@@ -1372,7 +2156,7 @@ export default class Game {
         this.ctx.fillStyle = btn.isHovered ? btn.hoverColor : btn.color;
         this.ctx.fillRect(btn.x, btn.y, btn.width, btn.height);
         this.ctx.fillStyle = "black";
-        this.ctx.font = "bold 16px Arial";
+        this.ctx.font = "12px Minipixel";
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "middle";
         this.ctx.fillText(btn.text, btn.x + btn.width/2, btn.y + btn.height/2);
@@ -1383,8 +2167,11 @@ export default class Game {
         let targetBtns = [];
 
         if (this.gameState === 'MENU') targetBtns = [this.startBtn];
-        else if (this.gameState === 'GAME_OVER') targetBtns = [this.restartBtn];
-        else if (this.gameState === 'VICTORY') targetBtns = [this.nextLevelBtn, this.menuBtn];
+        else if (this.gameState === 'GAME_OVER') targetBtns = [this.restartBtn, this.menuBtn];
+        //else if (this.gameState === 'VICTORY') targetBtns = [this.nextLevelBtn, this.menuBtn];
+        else if (this.gameState === 'VICTORY' || this.gameState === 'GAME_COMPLETE') {
+            targetBtns = [this.nextLevelBtn, this.menuBtn];
+        }
         //else if (this.gameState === 'PLAYING') targetBtns = [this.drawActionBtn];
 
         let cursorActive = false;
@@ -1429,6 +2216,49 @@ export default class Game {
         this.render();
 
         
+    }
+
+    countActiveMasks() {
+        let count = 0;
+        for (let r = 0; r < this.rows; r++) {
+            for (let c = 0; c < this.cols; c++) {
+                if (this.maskBoard[r][c] !== null) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+
+    lowestCard(){
+        let lowestInHand = 999; // Start high
+
+        this.playerHand.forEach(cardId => {
+            // Convert every card in hand to Real Value
+            const r = (cardId - 1) % 10 + 1;
+            const v = r > 7 ? r + 2 : r;
+
+            if (v < lowestInHand) {
+                lowestInHand = v;
+            }
+        });
+        return lowestInHand;
+    }
+
+    highestCard(){
+        let highestInHand = 0; // Start low
+
+        this.playerHand.forEach(cardId => {
+            // Convert every card in hand to Real Value
+            const r = (cardId - 1) % 10 + 1;
+            const v = r > 7 ? r + 2 : r;
+
+            if (v > highestInHand) {
+                highestInHand = v;
+            }
+        });
+        return highestInHand;
     }
 
     isInside(x, y, btn) { return x > btn.x && x < btn.x + btn.width && y > btn.y && y < btn.y + btn.height; }
